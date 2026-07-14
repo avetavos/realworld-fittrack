@@ -1,0 +1,248 @@
+---
+title: Progress endpoints
+description: "app/routers/progress.py — the three read-only routes over ProgressRepo: GET /progress/records (personal records), GET /progress/volume?weeks=N (weekly volume, weeks a bounded validated query param), and GET /progress/exercises/{id} (a single exercise's per-session trend). How typed response schemas (PersonalRecord, WeeklyVolume, ExerciseTrendPoint) turn aggregation rows into a documented contract, and why weeks gets a default and bounds. Verified with a Supabase JWT and curl against localhost:8000 — the final backend lesson before the Flutter client."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+`app/routers/progress.py` — the routes that expose the aggregations from [Aggregation queries →](/fittrack/en/progress/aggregation-queries/) as FitTrack's progress API, each with a typed response schema:
+
+- `GET /progress/records` → `list[PersonalRecord]` — heaviest set per exercise, with reps and date.
+- `GET /progress/volume?weeks=N` → `list[WeeklyVolume]` — total volume per week over the last *N* weeks.
+- `GET /progress/exercises/{id}` → `list[ExerciseTrendPoint]` — one exercise's top weight and volume per session over time.
+
+All three are read-only and owner-scoped through `Depends(get_current_user)`; they add the per-exercise trend query to `ProgressRepo`, then wrap every query result in a Pydantic **response schema** so the output is a documented, validated contract rather than raw database rows. This is the **last backend lesson** — once it's done, the Flutter and Svelte clients have a complete API to build against.
+
+## Why
+
+Aggregation queries return anonymous rows — tuples of `(exercise_id, name, weight, reps, date)`. Handing those to a client as-is would work, but the shape would be undocumented and fragile: rename a column in the query and the JSON silently changes, and `/docs` shows nothing useful. Wrapping each row in a **response schema** (`PersonalRecord`, `WeeklyVolume`, `ExerciseTrendPoint`) fixes the output contract. FastAPI's `response_model` validates every row against the schema on the way out, serialises it consistently, and publishes the exact response shape in the OpenAPI docs — so the client teams building the Flutter and Svelte apps have a precise, generated spec to code against, not a shape they have to reverse-engineer from example responses.
+
+The `weeks` parameter is the one piece of user input here, and it gets treated like input: a **bounded, validated query parameter** with a default. `weeks: int = Query(4, ge=1, le=52)` gives a sensible default (four weeks) when the client omits it, and rejects `0`, negatives, or an absurd `10000` with a `422` before the query runs. Bounds aren't just tidiness — an unbounded window is a request to scan and bucket arbitrarily much history, so capping it (52 weeks — a year) keeps the query's cost predictable. The client asks for a range; the API decides what range is reasonable.
+
+The **per-exercise trend** rounds out the set. Where personal records collapse history to one row per exercise, the trend keeps one row *per session* for a single exercise — its top weight and volume that day — so a client can draw a progress line. It's the same aggregation toolkit as the volume query (`group by` a per-session key, `max` and `sum` the sets), scoped to one `exercise_id`, and it reuses the ownership filter (`Workout.user_id == caller`) so you only ever see your own trend.
+
+## Pros & cons
+
+**Typed response schemas over the query rows** vs. **returning the raw rows/dicts directly**
+
+- **Pros:** the output shape is validated by FastAPI on every response, serialised consistently (e.g. numbers as numbers), and published in `/docs` as a real contract the client teams generate types from; changing a query's internal column names can't silently reshape the public JSON.
+- **Cons:** each aggregation needs a matching schema and a mapping step from row to model — a little boilerplate for what is ultimately a read; and the schema can drift from the query if you edit one and forget the other (a test over the endpoint catches that). The documented, stable contract is worth the extra class, especially with two client apps consuming it.
+
+**`weeks` as a bounded query param with a default** vs. **an unbounded or required window**
+
+- **Pros:** a default (`4`) means the common call is just `GET /progress/volume` with no params; bounds (`ge=1, le=52`) reject nonsense with a clear `422` and cap how much history a single request can scan, keeping cost predictable; and it's all declared in one `Query(...)`, documented automatically.
+- **Cons:** a caller who genuinely wants more than a year of weekly buckets can't get it in one request (they'd page or you'd raise the cap), and the bound is a policy choice baked into the API. For a progress view, a year of weeks is plenty and the predictability is worth the ceiling.
+
+## Set it up
+
+### 1. `app/schemas/progress.py`
+
+One schema per endpoint. `from_attributes` lets Pydantic read straight from the `RowMapping` the repo returns; weights and volume are `float` for clean JSON numbers (the database keeps the precise `numeric`).
+
+```python
+# app/schemas/progress.py — response contracts for the progress routes.
+import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict
+
+
+class PersonalRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    exercise_id: uuid.UUID
+    exercise_name: str
+    best_weight_kg: float
+    reps: int
+    achieved_at: datetime
+
+
+class WeeklyVolume(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    week_start: datetime
+    volume_kg: float
+
+
+class ExerciseTrendPoint(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    workout_id: uuid.UUID
+    performed_at: datetime
+    top_weight_kg: float
+    volume_kg: float
+```
+
+### 2. `app/repositories/progress.py`
+
+Add the per-exercise trend to the `ProgressRepo` from [the last lesson](/fittrack/en/progress/aggregation-queries/) — one row per session for a single exercise, ordered oldest-to-newest so a client can plot it left to right.
+
+```python
+# app/repositories/progress.py — add to ProgressRepo.
+    async def exercise_trend(
+        self, user_id: uuid.UUID, exercise_id: uuid.UUID
+    ) -> Sequence[RowMapping]:
+        """Per-session top weight and volume for one exercise, oldest first —
+        the shape a progress chart plots. Owner-scoped like every read."""
+        stmt = (
+            select(
+                Workout.id.label("workout_id"),
+                Workout.performed_at,
+                func.max(WorkoutSet.weight_kg).label("top_weight_kg"),
+                func.sum(WorkoutSet.reps * WorkoutSet.weight_kg).label("volume_kg"),
+            )
+            .join(Workout, Workout.id == WorkoutSet.workout_id)
+            .where(
+                Workout.user_id == user_id,
+                WorkoutSet.exercise_id == exercise_id,
+            )
+            .group_by(Workout.id, Workout.performed_at)
+            .order_by(Workout.performed_at)
+        )
+        result = await self.session.execute(stmt)
+        return result.mappings().all()
+```
+
+### 3. `app/routers/progress.py`
+
+Each route calls one repo method and lets `response_model` map the rows through the schema. `weeks` is the only parameter, validated by `Query`.
+
+```python
+# app/routers/progress.py — read-only progress routes over ProgressRepo.
+import uuid
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth import get_current_user
+from app.db import get_session
+from app.repositories.progress import ProgressRepo
+from app.schemas.progress import ExerciseTrendPoint, PersonalRecord, WeeklyVolume
+
+router = APIRouter(prefix="/progress", tags=["progress"])
+
+
+@router.get("/records", response_model=list[PersonalRecord])
+async def personal_records(
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """The caller's heaviest set per exercise — their PRs."""
+    return await ProgressRepo(session).personal_records(user_id)
+
+
+@router.get("/volume", response_model=list[WeeklyVolume])
+async def weekly_volume(
+    weeks: int = Query(4, ge=1, le=52, description="Number of weeks back to total"),
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Total training volume per week over the last `weeks` weeks."""
+    return await ProgressRepo(session).weekly_volume(user_id, weeks)
+
+
+@router.get("/exercises/{exercise_id}", response_model=list[ExerciseTrendPoint])
+async def exercise_trend(
+    exercise_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """One exercise's per-session trend — top weight and volume over time."""
+    return await ProgressRepo(session).exercise_trend(user_id, exercise_id)
+```
+
+Include it in `app/main.py` — the last router the backend adds:
+
+```python
+# app/main.py
+from app.routers import exercises, progress, workouts
+
+app.include_router(exercises.router)
+app.include_router(workouts.router)
+app.include_router(progress.router)
+```
+
+## Verify
+
+Get a token and make sure you've logged a few sessions (see [Logging sessions →](/fittrack/en/workouts/logging-sessions/#verify)). Fetch your personal records:
+
+```bash
+TOKEN=$(curl -s "http://127.0.0.1:54321/auth/v1/token?grant_type=password" \
+  -H "apikey: $SUPABASE_ANON_KEY" -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"password123"}' | jq -r .access_token)
+
+curl -s localhost:8000/progress/records -H "Authorization: Bearer $TOKEN" | jq
+```
+
+```json
+[
+  {
+    "exercise_id": "…",
+    "exercise_name": "Back Squat",
+    "best_weight_kg": 102.5,
+    "reps": 5,
+    "achieved_at": "2026-07-14T09:30:00Z"
+  },
+  {
+    "exercise_id": "…",
+    "exercise_name": "Bench Press",
+    "best_weight_kg": 65.0,
+    "reps": 6,
+    "achieved_at": "2026-07-14T18:05:00Z"
+  }
+]
+```
+
+Weekly volume — the default window, then an explicit one:
+
+```bash
+curl -s "localhost:8000/progress/volume" -H "Authorization: Bearer $TOKEN" | jq
+curl -s "localhost:8000/progress/volume?weeks=12" -H "Authorization: Bearer $TOKEN" | jq length
+```
+
+```json
+[
+  { "week_start": "2026-07-13T00:00:00Z", "volume_kg": 2467.5 }
+]
+```
+
+Confirm the parameter bounds: `weeks=0` is rejected with `422`, never reaching the query:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" \
+  "localhost:8000/progress/volume?weeks=0" -H "Authorization: Bearer $TOKEN"
+```
+
+```txt
+422
+```
+
+Finally a single exercise's trend (reuse an id from `GET /exercises`):
+
+```bash
+EX=$(curl -s localhost:8000/exercises -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id')
+curl -s localhost:8000/progress/exercises/$EX -H "Authorization: Bearer $TOKEN" \
+  | jq 'map({performed_at, top_weight_kg, volume_kg})'
+```
+
+```json
+[
+  { "performed_at": "2026-07-07T09:00:00Z", "top_weight_kg": 95.0, "volume_kg": 1900.0 },
+  { "performed_at": "2026-07-14T09:30:00Z", "top_weight_kg": 102.5, "volume_kg": 2050.0 }
+]
+```
+
+Oldest-first, so a chart reads left to right and the upward trend is visible. As a final check that the whole backend hangs together, open [http://localhost:8000/docs](http://localhost:8000/docs) — every route from all three modules (exercises, workouts, progress) is listed with its request and response schemas, the complete API contract the clients will build against.
+
+Check your understanding:
+
+- The repo already returns rows with the right columns. What does wrapping them in `PersonalRecord`/`WeeklyVolume` via `response_model` add that returning the raw rows wouldn't?
+- `weeks` has `Query(4, ge=1, le=52)`. What does each of the three arguments do, and what happens to a request with `weeks=100`?
+- `exercise_trend` orders oldest-first while workout *history* was newest-first. Why does the trend want the opposite order?
+- Every progress query filters on `Workout.user_id == caller`. Trace what `GET /progress/records` returns for a user with no logged workouts, and why there's no special-case code for that.
+
+## Recap
+
+`app/routers/progress.py` completes the backend: `GET /progress/records` (personal records), `GET /progress/volume?weeks=N` (weekly volume, `weeks` a bounded `Query(4, ge=1, le=52)`), and `GET /progress/exercises/{id}` (a single exercise's per-session trend, oldest-first) — each read-only, owner-scoped, and delegating to `ProgressRepo`. Typed **response schemas** (`PersonalRecord`, `WeeklyVolume`, `ExerciseTrendPoint`) turn anonymous aggregation rows into a validated, documented contract that `/docs` publishes for the client teams. With all three routers wired into `app/main.py`, the FitTrack API is complete: auth, exercises, workouts, and progress, verified end to end with a Supabase JWT and `curl`. Next, the clients begin — [Flutter — Foundation →](/fittrack/en/flutter-foundation/) stands up the mobile app: Riverpod, Supabase sign-in, and a typed API client that attaches the JWT and calls exactly these endpoints.

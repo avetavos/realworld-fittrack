@@ -1,0 +1,202 @@
+---
+title: Aggregation queries
+description: "SQL ที่เปลี่ยน set ที่ log ไว้ให้เป็นข้อมูลเชิงลึก — คำนวณใน database ไม่ใช่ใน Python personal record ผ่าน Postgres DISTINCT ON (set ที่หนักที่สุดต่อ exercise พร้อม reps และวันที่มันเกิดขึ้น) และ weekly volume ผ่าน date_trunc + sum(reps * weight_kg) เหนือ window ที่มีขอบเขต ทำไมต้อง aggregate ใน SQL, ทำไม DISTINCT ON ถึงชนะ GROUP BY subquery สำหรับ best-row-per-group และ ProgressRepo เขียนแต่ละอันด้วย SQLAlchemy 2.0 select() อย่างไร ตรวจสอบด้วยการรัน query กับ local Supabase Postgres ด้วย psql"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+query เบื้องหลังฟีเจอร์ progress ของ FitTrack — เขียนเป็น SQL ที่รัน **ใน database** รวบไว้ใน `app/repositories/progress.py` ใหม่ [Progress endpoints →](/fittrack/th/progress/progress-endpoints/) ห่อพวกนี้เป็น route ต่อไป บทนี้ว่าด้วยการทำ aggregation เองให้ถูก มีสามอัน ทั้งหมดอ่าน history ของ `workouts` / `workout_sets` จาก [the Workouts API →](/fittrack/th/workouts/reading-history/):
+
+- **Personal records** — สำหรับแต่ละ exercise, set ที่หนักที่สุดที่ user เคย log บวก reps และวันที่ของ set นั้น
+- **Weekly volume** — training volume รวม (`sum(reps * weight_kg)`) แบ่งเป็น bucket ตามสัปดาห์ เหนือ *N* สัปดาห์ล่าสุด
+- **Per-exercise trend** — สำหรับ exercise หนึ่งตัว, weight สูงสุดและ volume ต่อ session ตามเวลา
+
+ประเด็นของ module นี้คือ database *เก่งมาก* ในการ "สรุปหลายแถวให้เหลือไม่กี่แถว" และการดันงานนั้นลงไปที่ Postgres เร็วกว่า ง่ายกว่า และโค้ดน้อยกว่าการดึงทุก set เข้า Python แล้ววน loop
+
+## Why
+
+progress โดยเนื้อแท้คือ **aggregation**: set ที่ log ไว้เป็นพัน ๆ กลายเป็นตัวเลขไม่กี่ตัว — best ต่อ exercise, total รายสัปดาห์ Postgres คำนวณพวกนั้นด้วย `GROUP BY`, `sum`, `max` และเพื่อน ๆ เหนือ column ที่ทำ index ไว้ คืนเฉพาะแถวสรุปข้าม wire ทำมันใน Python แทน คุณจะต้อง transfer ทุก set เข้า app ก่อน แล้ววน loop — memory มากกว่า, latency มากกว่า และเป็นการ reimplement สิ่งที่ query planner ทำได้ดีอยู่แล้วด้วยมือ กฎประมาณการที่ module นี้สอน: **ถ้าคำตอบคือสรุปของหลายแถว ให้ database สรุปเอง**
+
+**Weekly volume** คือเคสตรงไปตรงมา volume คือ `reps * weight_kg` ต่อ set ส่วน total รายสัปดาห์คือค่านั้น sum ภายในแต่ละสัปดาห์ `date_trunc('week', performed_at)` ของ Postgres snap timestamp ของทุก session ให้ไปที่ต้นสัปดาห์ ISO ของมัน และการ group บน bucket นั้นให้ query เดียวคืนแถว `(week_start, total_volume)` การจำกัดมันไว้ที่ *N* สัปดาห์ล่าสุด (`performed_at >= now() - make_interval(weeks => N)`) เก็บผลให้เล็กและ scan ให้ถูก
+
+**Personal records** คือเคสที่น่าสนใจ เพราะ PR ไม่ใช่ aggregate ธรรมดา — คุณไม่ได้ต้องการแค่ `max(weight_kg)` ต่อ exercise คุณต้องการ *ทั้ง set* ที่ทำได้: กี่ reps และเมื่อไหร่ นั่นคือปัญหา "best row per group" และ Postgres มีเครื่องมือที่สร้างมาเพื่อสิ่งนี้: **`DISTINCT ON`** `select distinct on (exercise_id) ... order by exercise_id, weight_kg desc` เก็บหนึ่งแถวต่อ exercise เป๊ะ ๆ — แถวแรกหลังจากเรียง คืออันที่หนักที่สุด — และเพราะมันเป็นแถวจริง คุณได้ `reps` กับ `performed_at` ของมันมาฟรี ทางเลือกคลาสสิก — `GROUP BY exercise_id` เพื่อหา max weight แล้ว join กลับเพื่อหาว่า set ไหนได้มัน — คือสอง pass และ SQL มากกว่าสำหรับคำตอบเดียวกัน และมันกำกวมเมื่อสอง set weight เท่ากัน `DISTINCT ON` พร้อม tiebreak ใน `ORDER BY` (`performed_at desc`) บอกเป๊ะ ๆ ว่าแถวไหนชนะ
+
+## Pros & cons
+
+**Aggregating in SQL (`GROUP BY` / `DISTINCT ON` in Postgres)** vs. **fetching rows and aggregating in Python**
+
+- **Pros:** database คืนเฉพาะสรุป — ไม่กี่แถว ไม่ใช่ทั้ง history — ดังนั้นข้อมูลข้าม wire น้อยกว่ามากและใช้ memory น้อยกว่า `sum`, `max` และ `date_trunc` รันเหนือ column ที่ทำ index ไว้ใน C เร็วกว่า Python loop และ logic ของ aggregation เป็น query เดียวแบบ declarative แทนที่จะเป็น accumulator bookkeeping ที่คุณทำผิดพลาดเล็ก ๆ ได้
+- **Cons:** ตอนนี้ logic อยู่ใน SQL ที่คุณต้องอ่านออก และ aggregate ที่ซับซ้อน unit-test แยกได้ยากกว่าฟังก์ชันธรรมดา คุณยังพึ่งฟีเจอร์เฉพาะ Postgres (`DISTINCT ON`, `date_trunc`) ที่ย้ายไป database อื่นไม่ได้แบบไม่แก้ สำหรับ app ที่ backed ด้วย Postgres ที่คำตอบคือสรุป นั่นคือการแลกที่คุ้มค่า
+
+**`DISTINCT ON` for best-row-per-group** vs. **`GROUP BY` max + a self-join back to the winning row**
+
+- **Pros:** หนึ่ง pass และไม่กี่บรรทัด — `distinct on (exercise_id) ... order by exercise_id, weight_kg desc` คืน *set* ที่หนักที่สุด พก reps และวันที่ของมัน tiebreak ใน `ORDER BY` ทำให้กรณีเสมอ deterministic แทนที่จะสุ่ม
+- **Cons:** `DISTINCT ON` เป็น extension ของ Postgres (เวอร์ชัน window-function `row_number()` คือตัวเทียบเท่าที่ portable แต่ยาวกว่า) และ semantics "แถวแรกหลังเรียง" ของมันชวนงงนิดหน่อยจนกว่าคุณจะซึมซับว่า `ORDER BY` *คือ* กฎการเลือก สำหรับ "set ที่สร้างสถิติ" มันคือเครื่องมือที่ชัดที่สุดที่ Postgres มีให้
+
+## Set it up
+
+### 1. `app/repositories/progress.py`
+
+`ProgressRepo` ควบคู่กับ `ExerciseRepo` และ `WorkoutRepo` เก็บ aggregation query แบบ read-only แต่ละอันคืนแถวเบา ๆ (ผ่าน `.mappings()`) ที่ [บท endpoints](/fittrack/th/progress/progress-endpoints/) validate เป็น response schema เริ่มด้วยสอง query หลัก ส่วน per-exercise trend เพิ่มที่นั่น
+
+```python
+# app/repositories/progress.py — read-only aggregations over workout history.
+import uuid
+from collections.abc import Sequence
+
+from sqlalchemy import RowMapping, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.exercise import Exercise
+from app.models.workout import Workout
+from app.models.workout_set import WorkoutSet
+
+
+class ProgressRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def personal_records(self, user_id: uuid.UUID) -> Sequence[RowMapping]:
+        """Heaviest set per exercise, with the reps and date that achieved it.
+        DISTINCT ON keeps one row per exercise — the first after the sort,
+        i.e. the top weight (ties broken by most recent)."""
+        stmt = (
+            select(
+                WorkoutSet.exercise_id,
+                Exercise.name.label("exercise_name"),
+                WorkoutSet.weight_kg.label("best_weight_kg"),
+                WorkoutSet.reps,
+                Workout.performed_at.label("achieved_at"),
+            )
+            .join(Workout, Workout.id == WorkoutSet.workout_id)
+            .join(Exercise, Exercise.id == WorkoutSet.exercise_id)
+            .where(Workout.user_id == user_id)
+            .distinct(WorkoutSet.exercise_id)  # Postgres DISTINCT ON (exercise_id)
+            .order_by(
+                WorkoutSet.exercise_id,
+                WorkoutSet.weight_kg.desc(),   # heaviest wins
+                Workout.performed_at.desc(),   # ties → most recent
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.mappings().all()
+
+    async def weekly_volume(
+        self, user_id: uuid.UUID, weeks: int
+    ) -> Sequence[RowMapping]:
+        """Total volume = sum(reps * weight_kg), bucketed by ISO week, over
+        the last `weeks` weeks. date_trunc snaps each session to its week start."""
+        week_start = func.date_trunc("week", Workout.performed_at).label("week_start")
+        volume = func.sum(WorkoutSet.reps * WorkoutSet.weight_kg).label("volume_kg")
+        stmt = (
+            select(week_start, volume)
+            .join(Workout, Workout.id == WorkoutSet.workout_id)
+            .where(
+                Workout.user_id == user_id,
+                Workout.performed_at
+                >= func.now() - func.make_interval(0, 0, weeks),  # weeks ago
+            )
+            .group_by(week_start)
+            .order_by(week_start)
+        )
+        result = await self.session.execute(stmt)
+        return result.mappings().all()
+```
+
+> `func.make_interval(0, 0, weeks)` map ไปที่ Postgres `make_interval(years, months, weeks => …)` — argument ตำแหน่งที่สามคือ weeks มันเก็บ window ให้เป็น interval arithmetic จริงใน SQL แทนที่จะคำนวณ cutoff date ใน Python
+
+### 2. The SQL these generate
+
+คุ้มค่าที่จะเห็น SQL ข้างใต้ — นี่คือสิ่งที่คุณจะรันใน `psql` เป๊ะ ๆ Personal records:
+
+```sql
+select distinct on (ws.exercise_id)
+       ws.exercise_id,
+       e.name            as exercise_name,
+       ws.weight_kg      as best_weight_kg,
+       ws.reps,
+       w.performed_at    as achieved_at
+from workout_sets ws
+join workouts  w on w.id = ws.workout_id
+join exercises e on e.id = ws.exercise_id
+where w.user_id = :user_id
+order by ws.exercise_id, ws.weight_kg desc, w.performed_at desc;
+```
+
+Weekly volume:
+
+```sql
+select date_trunc('week', w.performed_at)      as week_start,
+       sum(ws.reps * ws.weight_kg)             as volume_kg
+from workout_sets ws
+join workouts w on w.id = ws.workout_id
+where w.user_id = :user_id
+  and w.performed_at >= now() - make_interval(weeks => :weeks)
+group by week_start
+order by week_start;
+```
+
+## Verify
+
+นี่คือ query ดังนั้น verify มันตรง ๆ กับ **local Supabase Postgres** ด้วย `psql` ก่อนต่อสาย route ทับมัน log สัก session ผ่าน API ก่อน (ดู [Logging sessions →](/fittrack/th/workouts/logging-sessions/#verify)) เพื่อให้มีข้อมูล connect ด้วย credential ของ `DATABASE_URL`:
+
+```bash
+psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+```
+
+หา user id ของคุณ แล้วรัน PR query สำหรับมัน (แทน uuid):
+
+```sql
+select id, user_id from workouts order by performed_at desc limit 1;
+
+select distinct on (ws.exercise_id)
+       e.name as exercise, ws.weight_kg as best_weight, ws.reps, w.performed_at
+from workout_sets ws
+join workouts  w on w.id = ws.workout_id
+join exercises e on e.id = ws.exercise_id
+where w.user_id = 'b1e7...your-user-id...'
+order by ws.exercise_id, ws.weight_kg desc, w.performed_at desc;
+```
+
+```txt
+     exercise      | best_weight | reps |      performed_at
+-------------------+-------------+------+------------------------
+ Back Squat        |      102.50 |    5 | 2026-07-14 09:30:00+00
+ Bench Press       |       65.00 |    6 | 2026-07-14 18:05:00+00
+(2 rows)
+```
+
+หนึ่งแถวต่อ exercise แต่ละอันคือ set ที่หนักที่สุด — พร้อม reps และวันที่มันเกิดขึ้น ตอนนี้ weekly volume เหนือ 4 สัปดาห์ล่าสุด:
+
+```sql
+select date_trunc('week', w.performed_at) as week_start,
+       sum(ws.reps * ws.weight_kg)        as volume_kg
+from workout_sets ws
+join workouts w on w.id = ws.workout_id
+where w.user_id = 'b1e7...your-user-id...'
+  and w.performed_at >= now() - make_interval(weeks => 4)
+group by week_start
+order by week_start;
+```
+
+```txt
+       week_start       | volume_kg
+------------------------+-----------
+ 2026-07-13 00:00:00+00 |   2467.50
+(1 row)
+```
+
+cross-check ยอดรวมด้วยมือเทียบกับ set ที่คุณ log ไว้ (`reps * weight` sum กัน) — SQL กับเลขคณิตควรตรงกัน นั่นคือ test ทั้งหมด: aggregation คืนสิ่งที่การนับด้วยมือจะคืน คำนวณใน query เดียว
+
+ตรวจสอบความเข้าใจ:
+
+- personal record ไม่ใช่แค่ `max(weight_kg)` — มันคือ *set* ที่ทำ weight นั้นได้ ทำไมนั่นทำให้ `DISTINCT ON` เหมาะกว่า `GROUP BY` ธรรมดากับ `max`?
+- ใน PR query, term `ORDER BY` ตัวที่สองและสาม (`weight_kg desc` แล้วก็ `performed_at desc`) ทำหน้าที่อะไร? อะไรจะกำกวมถ้าไม่มีมัน?
+- `date_trunc('week', performed_at)` ปรากฏทั้งใน `SELECT` และ `GROUP BY` ทำไม grouping key ต้องตรงกับ bucket expression ที่เลือก?
+- ทำไมต้องคำนวณ weekly volume ใน SQL แทนที่จะ fetch ทุก set สำหรับ window มา sum ใน Python? บอกต้นทุนหนึ่งอย่างของวิธี Python
+
+## Recap
+
+ฟีเจอร์ progress ของ FitTrack คือ **SQL aggregation** เหนือ history ที่ log ไว้ รวบใน `ProgressRepo`: personal record ใช้ Postgres **`DISTINCT ON (exercise_id)`** กับ `ORDER BY weight_kg desc, performed_at desc` เพื่อคืน *set* ที่หนักที่สุดต่อ exercise — พก reps และวันที่ของมัน กรณีเสมอ break แบบ deterministic — และ weekly volume ใช้ **`date_trunc('week', …)` + `sum(reps * weight_kg)`** เหนือ window `make_interval` ที่มีขอบเขต ทั้งคู่รันใน database และคืนเฉพาะแถวสรุป ซึ่งเร็วกว่าและง่ายกว่าการวน loop ใน Python คุณตรวจสอบแต่ละ query ตรง ๆ กับ local Postgres ด้วย `psql` cross-check volume ด้วยมือ ต่อไป [Progress endpoints →](/fittrack/th/progress/progress-endpoints/) ห่อพวกนี้ — บวก per-exercise trend — ใน route `GET /progress/*` พร้อม response schema ที่มี type

@@ -1,0 +1,202 @@
+---
+title: Aggregation queries
+description: "The SQL that turns logged sets into insight — computed in the database, not in Python. Personal records via Postgres DISTINCT ON (the heaviest set per exercise, with the reps and date it happened), and weekly volume via date_trunc + sum(reps * weight_kg) over a bounded window. Why aggregate in SQL, why DISTINCT ON beats a GROUP BY subquery for best-row-per-group, and how a ProgressRepo expresses each with SQLAlchemy 2.0 select(). Verified by running the queries against the local Supabase Postgres with psql."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+The queries behind FitTrack's progress features — written as SQL that runs **in the database**, gathered into a new `app/repositories/progress.py`. [Progress endpoints →](/fittrack/en/progress/progress-endpoints/) wraps these in routes next; this lesson is about getting the aggregations themselves right. Three of them, all reading the `workouts` / `workout_sets` history from [the Workouts API →](/fittrack/en/workouts/reading-history/):
+
+- **Personal records** — for each exercise, the heaviest set the user has ever logged, plus the reps and date of that set.
+- **Weekly volume** — total training volume (`sum(reps * weight_kg)`) bucketed by week, over the last *N* weeks.
+- **Per-exercise trend** — for one exercise, its top weight and volume per session over time.
+
+The point of the module is that a database is *very* good at "summarise many rows into a few", and pushing that work down to Postgres is faster, simpler, and less code than pulling every set into Python and looping.
+
+## Why
+
+Progress is inherently an **aggregation**: thousands of logged sets become a handful of numbers — a per-exercise best, a weekly total. Postgres computes those with `GROUP BY`, `sum`, `max`, and friends over indexed columns, returning only the summary rows across the wire. Do it in Python instead and you first transfer every set into the app, then loop — more memory, more latency, and a hand-rolled reimplementation of what the query planner already does well. The rule of thumb this module teaches: **if the answer is a summary of many rows, let the database summarise.**
+
+**Weekly volume** is the straightforward case. Volume is `reps * weight_kg` per set; the weekly total is that summed within each week. Postgres's `date_trunc('week', performed_at)` snaps every session's timestamp to the start of its ISO week, and grouping on that bucket lets one query return `(week_start, total_volume)` rows. Bounding it to the last *N* weeks (`performed_at >= now() - make_interval(weeks => N)`) keeps the result small and the scan cheap.
+
+**Personal records** are the interesting case, because a PR isn't a plain aggregate — you don't just want `max(weight_kg)` per exercise, you want the *whole set* that achieved it: how many reps, and when. That's a "best row per group" problem, and Postgres has a purpose-built tool for it: **`DISTINCT ON`**. `select distinct on (exercise_id) ... order by exercise_id, weight_kg desc` keeps exactly one row per exercise — the first one after sorting, i.e. the heaviest — and because it's a real row you get its `reps` and `performed_at` for free. The classic alternative — `GROUP BY exercise_id` to find the max weight, then join back to find which set had it — is two passes and more SQL for the same answer, and it gets ambiguous when two sets tie on weight. `DISTINCT ON` with a tiebreak in the `ORDER BY` (`performed_at desc`) says precisely which row wins.
+
+## Pros & cons
+
+**Aggregating in SQL (`GROUP BY` / `DISTINCT ON` in Postgres)** vs. **fetching rows and aggregating in Python**
+
+- **Pros:** the database returns only the summary — a few rows, not the whole history — so far less data crosses the wire and less memory is used; `sum`, `max`, and `date_trunc` run over indexed columns in C, faster than a Python loop; and the aggregation logic is one declarative query instead of accumulator bookkeeping you can get subtly wrong.
+- **Cons:** the logic now lives in SQL you must be able to read, and complex aggregates are harder to unit-test in isolation than a plain function; you also lean on Postgres-specific features (`DISTINCT ON`, `date_trunc`) that wouldn't port unchanged to another database. For a Postgres-backed app where the answer is a summary, those are worthwhile trades.
+
+**`DISTINCT ON` for best-row-per-group** vs. **`GROUP BY` max + a self-join back to the winning row**
+
+- **Pros:** one pass and a few lines — `distinct on (exercise_id) ... order by exercise_id, weight_kg desc` returns the heaviest *set*, carrying its reps and date; the `ORDER BY` tiebreak makes ties deterministic instead of arbitrary.
+- **Cons:** `DISTINCT ON` is a Postgres extension (a window-function `row_number()` version is the portable equivalent, but longer); and its "first row after the sort" semantics are a little surprising until you've internalised that the `ORDER BY` *is* the selection rule. For "the set that set the record", it's the clearest tool Postgres offers.
+
+## Set it up
+
+### 1. `app/repositories/progress.py`
+
+A `ProgressRepo` alongside `ExerciseRepo` and `WorkoutRepo`, holding the read-only aggregation queries. Each returns lightweight rows (via `.mappings()`) that [the endpoints lesson](/fittrack/en/progress/progress-endpoints/) validates into response schemas. Start with the two headline queries; the per-exercise trend is added there.
+
+```python
+# app/repositories/progress.py — read-only aggregations over workout history.
+import uuid
+from collections.abc import Sequence
+
+from sqlalchemy import RowMapping, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.exercise import Exercise
+from app.models.workout import Workout
+from app.models.workout_set import WorkoutSet
+
+
+class ProgressRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def personal_records(self, user_id: uuid.UUID) -> Sequence[RowMapping]:
+        """Heaviest set per exercise, with the reps and date that achieved it.
+        DISTINCT ON keeps one row per exercise — the first after the sort,
+        i.e. the top weight (ties broken by most recent)."""
+        stmt = (
+            select(
+                WorkoutSet.exercise_id,
+                Exercise.name.label("exercise_name"),
+                WorkoutSet.weight_kg.label("best_weight_kg"),
+                WorkoutSet.reps,
+                Workout.performed_at.label("achieved_at"),
+            )
+            .join(Workout, Workout.id == WorkoutSet.workout_id)
+            .join(Exercise, Exercise.id == WorkoutSet.exercise_id)
+            .where(Workout.user_id == user_id)
+            .distinct(WorkoutSet.exercise_id)  # Postgres DISTINCT ON (exercise_id)
+            .order_by(
+                WorkoutSet.exercise_id,
+                WorkoutSet.weight_kg.desc(),   # heaviest wins
+                Workout.performed_at.desc(),   # ties → most recent
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.mappings().all()
+
+    async def weekly_volume(
+        self, user_id: uuid.UUID, weeks: int
+    ) -> Sequence[RowMapping]:
+        """Total volume = sum(reps * weight_kg), bucketed by ISO week, over
+        the last `weeks` weeks. date_trunc snaps each session to its week start."""
+        week_start = func.date_trunc("week", Workout.performed_at).label("week_start")
+        volume = func.sum(WorkoutSet.reps * WorkoutSet.weight_kg).label("volume_kg")
+        stmt = (
+            select(week_start, volume)
+            .join(Workout, Workout.id == WorkoutSet.workout_id)
+            .where(
+                Workout.user_id == user_id,
+                Workout.performed_at
+                >= func.now() - func.make_interval(0, 0, weeks),  # weeks ago
+            )
+            .group_by(week_start)
+            .order_by(week_start)
+        )
+        result = await self.session.execute(stmt)
+        return result.mappings().all()
+```
+
+> `func.make_interval(0, 0, weeks)` maps to Postgres `make_interval(years, months, weeks => …)` — the third positional argument is weeks. It keeps the window a real interval arithmetic in SQL rather than computing a cutoff date in Python.
+
+### 2. The SQL these generate
+
+It's worth seeing the SQL underneath — this is exactly what you'd run in `psql`. Personal records:
+
+```sql
+select distinct on (ws.exercise_id)
+       ws.exercise_id,
+       e.name            as exercise_name,
+       ws.weight_kg      as best_weight_kg,
+       ws.reps,
+       w.performed_at    as achieved_at
+from workout_sets ws
+join workouts  w on w.id = ws.workout_id
+join exercises e on e.id = ws.exercise_id
+where w.user_id = :user_id
+order by ws.exercise_id, ws.weight_kg desc, w.performed_at desc;
+```
+
+Weekly volume:
+
+```sql
+select date_trunc('week', w.performed_at)      as week_start,
+       sum(ws.reps * ws.weight_kg)             as volume_kg
+from workout_sets ws
+join workouts w on w.id = ws.workout_id
+where w.user_id = :user_id
+  and w.performed_at >= now() - make_interval(weeks => :weeks)
+group by week_start
+order by week_start;
+```
+
+## Verify
+
+These are queries, so verify them directly against the **local Supabase Postgres** with `psql` before wiring routes over them. Log a few sessions through the API first (see [Logging sessions →](/fittrack/en/workouts/logging-sessions/#verify)) so there's data. Connect using the `DATABASE_URL` credentials:
+
+```bash
+psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+```
+
+Find your user id, then run the PR query for it (substitute the uuid):
+
+```sql
+select id, user_id from workouts order by performed_at desc limit 1;
+
+select distinct on (ws.exercise_id)
+       e.name as exercise, ws.weight_kg as best_weight, ws.reps, w.performed_at
+from workout_sets ws
+join workouts  w on w.id = ws.workout_id
+join exercises e on e.id = ws.exercise_id
+where w.user_id = 'b1e7...your-user-id...'
+order by ws.exercise_id, ws.weight_kg desc, w.performed_at desc;
+```
+
+```txt
+     exercise      | best_weight | reps |      performed_at
+-------------------+-------------+------+------------------------
+ Back Squat        |      102.50 |    5 | 2026-07-14 09:30:00+00
+ Bench Press       |       65.00 |    6 | 2026-07-14 18:05:00+00
+(2 rows)
+```
+
+One row per exercise, each the heaviest set — with the reps and date it happened. Now weekly volume over the last 4 weeks:
+
+```sql
+select date_trunc('week', w.performed_at) as week_start,
+       sum(ws.reps * ws.weight_kg)        as volume_kg
+from workout_sets ws
+join workouts w on w.id = ws.workout_id
+where w.user_id = 'b1e7...your-user-id...'
+  and w.performed_at >= now() - make_interval(weeks => 4)
+group by week_start
+order by week_start;
+```
+
+```txt
+       week_start       | volume_kg
+------------------------+-----------
+ 2026-07-13 00:00:00+00 |   2467.50
+(1 row)
+```
+
+Cross-check the total by hand against your logged sets (`reps * weight` summed) — the SQL and the arithmetic should agree. That's the whole test: the aggregation returns what a by-hand count would, computed in one query.
+
+Check your understanding:
+
+- A personal record isn't just `max(weight_kg)` — it's the *set* that hit that weight. Why does that make `DISTINCT ON` a better fit than a plain `GROUP BY` with a `max`?
+- In the PR query, what job does the second and third `ORDER BY` term (`weight_kg desc`, then `performed_at desc`) do? What would be ambiguous without them?
+- `date_trunc('week', performed_at)` appears in both the `SELECT` and the `GROUP BY`. Why must the grouping key match the selected bucket expression?
+- Why compute weekly volume in SQL rather than fetching every set for the window and summing in Python? Name a cost of the Python approach.
+
+## Recap
+
+FitTrack's progress features are **SQL aggregations** over the logged history, collected in `ProgressRepo`: personal records use Postgres **`DISTINCT ON (exercise_id)`** with an `ORDER BY weight_kg desc, performed_at desc` to return the heaviest *set* per exercise — carrying its reps and date, ties broken deterministically — and weekly volume uses **`date_trunc('week', …)` + `sum(reps * weight_kg)`** over a bounded `make_interval` window. Both run in the database and return only summary rows, which is faster and simpler than looping in Python. You verified each query directly against the local Postgres with `psql`, cross-checking volume by hand. Next, [Progress endpoints →](/fittrack/en/progress/progress-endpoints/) wraps these — plus the per-exercise trend — in `GET /progress/*` routes with typed response schemas.

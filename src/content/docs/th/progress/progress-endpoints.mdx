@@ -1,0 +1,248 @@
+---
+title: Progress endpoints
+description: "app/routers/progress.py — สาม route แบบ read-only เหนือ ProgressRepo: GET /progress/records (personal records), GET /progress/volume?weeks=N (weekly volume, weeks เป็น query param ที่มีขอบเขตและ validate), และ GET /progress/exercises/{id} (per-session trend ของ exercise ตัวเดียว) response schema ที่มี type (PersonalRecord, WeeklyVolume, ExerciseTrendPoint) เปลี่ยนแถว aggregation ให้เป็น contract ที่ document ไว้อย่างไร และทำไม weeks ถึงได้ default กับขอบเขต ตรวจสอบด้วย Supabase JWT กับ curl ยิงไปที่ localhost:8000 — บท backend สุดท้ายก่อน Flutter client"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+`app/routers/progress.py` — route ที่ expose aggregation จาก [Aggregation queries →](/fittrack/th/progress/aggregation-queries/) เป็น progress API ของ FitTrack แต่ละอันมี response schema ที่มี type:
+
+- `GET /progress/records` → `list[PersonalRecord]` — set ที่หนักที่สุดต่อ exercise พร้อม reps และวันที่
+- `GET /progress/volume?weeks=N` → `list[WeeklyVolume]` — volume รวมต่อสัปดาห์เหนือ *N* สัปดาห์ล่าสุด
+- `GET /progress/exercises/{id}` → `list[ExerciseTrendPoint]` — weight สูงสุดและ volume ต่อ session ของ exercise ตัวเดียวตามเวลา
+
+ทั้งสามตัวเป็น read-only และ scope ให้เจ้าของผ่าน `Depends(get_current_user)` มันเพิ่ม per-exercise trend query ให้ `ProgressRepo` แล้วห่อผลของทุก query ใน Pydantic **response schema** เพื่อให้ output เป็น contract ที่ document ไว้และ validate แล้ว แทนที่จะเป็นแถว database ดิบ นี่คือ **บท backend สุดท้าย** — เมื่อมันเสร็จ Flutter กับ Svelte client มี API ครบให้ build ทับ
+
+## Why
+
+aggregation query คืนแถวไม่มีชื่อ — tuple ของ `(exercise_id, name, weight, reps, date)` การส่งพวกนั้นให้ client ตรง ๆ ก็ใช้ได้ แต่รูปจะไม่ถูก document และเปราะ: เปลี่ยนชื่อ column ใน query แล้ว JSON เปลี่ยนเงียบ ๆ และ `/docs` ก็ไม่แสดงอะไรที่มีประโยชน์ การห่อแต่ละแถวใน **response schema** (`PersonalRecord`, `WeeklyVolume`, `ExerciseTrendPoint`) fix output contract ไว้ `response_model` ของ FastAPI validate ทุกแถวเทียบกับ schema ตอนขาออก serialize มันสม่ำเสมอ และ publish รูป response เป๊ะ ๆ ใน OpenAPI docs — ดังนั้นทีม client ที่ build Flutter กับ Svelte app มี spec ที่แม่นยำและ generate มาให้ code ทับ ไม่ใช่รูปที่ต้อง reverse-engineer จาก response ตัวอย่าง
+
+parameter `weeks` คือ user input ชิ้นเดียวตรงนี้ และมันถูกปฏิบัติแบบ input: **query parameter ที่มีขอบเขต, validate แล้ว, มี default** `weeks: int = Query(4, ge=1, le=52)` ให้ default ที่สมเหตุสมผล (สี่สัปดาห์) เมื่อ client ละไว้ และปฏิเสธ `0`, ค่าลบ หรือ `10000` ที่เกินจริงด้วย `422` ก่อน query รัน ขอบเขตไม่ใช่แค่ความเรียบร้อย — window ที่ไม่มีขอบเขตคือการขอ scan และ bucket history มากตามอำเภอใจ ดังนั้นการ cap มัน (52 สัปดาห์ — หนึ่งปี) เก็บต้นทุนของ query ให้คาดเดาได้ client ขอ range ส่วน API ตัดสินว่า range ไหนสมเหตุสมผล
+
+**per-exercise trend** เติมชุดให้ครบ ที่ซึ่ง personal record ยุบ history ให้เหลือหนึ่งแถวต่อ exercise ตัว trend เก็บหนึ่งแถว *ต่อ session* สำหรับ exercise ตัวเดียว — weight สูงสุดและ volume ในวันนั้น — เพื่อให้ client วาดเส้น progress ได้ มันคือ aggregation toolkit เดียวกับ volume query (`group by` key ต่อ session, `max` และ `sum` set) scope ให้ `exercise_id` เดียว และ reuse ownership filter (`Workout.user_id == caller`) ดังนั้นคุณเห็นแค่ trend ของตัวเอง
+
+## Pros & cons
+
+**Typed response schemas over the query rows** vs. **returning the raw rows/dicts directly**
+
+- **Pros:** รูป output ถูก validate โดย FastAPI ทุก response, serialize สม่ำเสมอ (เช่นตัวเลขเป็นตัวเลข) และ publish ใน `/docs` เป็น contract จริงที่ทีม client generate type จากมัน การเปลี่ยนชื่อ column ภายในของ query ไม่ทำให้ JSON สาธารณะเปลี่ยนรูปเงียบ ๆ ได้
+- **Cons:** แต่ละ aggregation ต้องมี schema ที่คู่กันและขั้น mapping จากแถวเป็น model — boilerplate นิดหน่อยสำหรับสิ่งที่สุดท้ายเป็นแค่ read และ schema เพี้ยนจาก query ได้ถ้าคุณแก้อันหนึ่งแล้วลืมอีกอัน (test เหนือ endpoint จับได้) contract ที่ document ไว้และเสถียรคุ้มกับ class ที่เพิ่มมา โดยเฉพาะกับ client app สองตัวที่ consume มัน
+
+**`weeks` as a bounded query param with a default** vs. **an unbounded or required window**
+
+- **Pros:** default (`4`) แปลว่า call ทั่วไปเป็นแค่ `GET /progress/volume` ไม่มี param, ขอบเขต (`ge=1, le=52`) ปฏิเสธค่าไร้สาระด้วย `422` ที่ชัดเจนและ cap ว่า request เดียว scan history ได้เท่าไหร่ เก็บต้นทุนให้คาดเดาได้ และทั้งหมดประกาศใน `Query(...)` เดียว document อัตโนมัติ
+- **Cons:** caller ที่ต้องการ weekly bucket มากกว่าหนึ่งปีจริง ๆ เอามันใน request เดียวไม่ได้ (พวกเขาต้อง page หรือคุณ raise cap) และขอบเขตคือ policy choice ที่ baked เข้า API สำหรับ progress view หนึ่งปีของสัปดาห์เหลือเฟือ และความคาดเดาได้คุ้มกับเพดาน
+
+## Set it up
+
+### 1. `app/schemas/progress.py`
+
+หนึ่ง schema ต่อ endpoint `from_attributes` ให้ Pydantic อ่านตรงจาก `RowMapping` ที่ repo คืน weight กับ volume เป็น `float` เพื่อตัวเลข JSON ที่สะอาด (database เก็บ `numeric` ที่แม่นยำไว้)
+
+```python
+# app/schemas/progress.py — response contracts for the progress routes.
+import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict
+
+
+class PersonalRecord(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    exercise_id: uuid.UUID
+    exercise_name: str
+    best_weight_kg: float
+    reps: int
+    achieved_at: datetime
+
+
+class WeeklyVolume(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    week_start: datetime
+    volume_kg: float
+
+
+class ExerciseTrendPoint(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    workout_id: uuid.UUID
+    performed_at: datetime
+    top_weight_kg: float
+    volume_kg: float
+```
+
+### 2. `app/repositories/progress.py`
+
+เพิ่ม per-exercise trend ให้ `ProgressRepo` จาก [บทที่แล้ว](/fittrack/th/progress/aggregation-queries/) — หนึ่งแถวต่อ session สำหรับ exercise ตัวเดียว เรียงเก่าสุดไปใหม่สุดเพื่อให้ client plot มันจากซ้ายไปขวาได้
+
+```python
+# app/repositories/progress.py — add to ProgressRepo.
+    async def exercise_trend(
+        self, user_id: uuid.UUID, exercise_id: uuid.UUID
+    ) -> Sequence[RowMapping]:
+        """Per-session top weight and volume for one exercise, oldest first —
+        the shape a progress chart plots. Owner-scoped like every read."""
+        stmt = (
+            select(
+                Workout.id.label("workout_id"),
+                Workout.performed_at,
+                func.max(WorkoutSet.weight_kg).label("top_weight_kg"),
+                func.sum(WorkoutSet.reps * WorkoutSet.weight_kg).label("volume_kg"),
+            )
+            .join(Workout, Workout.id == WorkoutSet.workout_id)
+            .where(
+                Workout.user_id == user_id,
+                WorkoutSet.exercise_id == exercise_id,
+            )
+            .group_by(Workout.id, Workout.performed_at)
+            .order_by(Workout.performed_at)
+        )
+        result = await self.session.execute(stmt)
+        return result.mappings().all()
+```
+
+### 3. `app/routers/progress.py`
+
+แต่ละ route เรียก repo method หนึ่งตัวและปล่อยให้ `response_model` map แถวผ่าน schema `weeks` คือ parameter เดียว validate โดย `Query`
+
+```python
+# app/routers/progress.py — read-only progress routes over ProgressRepo.
+import uuid
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth import get_current_user
+from app.db import get_session
+from app.repositories.progress import ProgressRepo
+from app.schemas.progress import ExerciseTrendPoint, PersonalRecord, WeeklyVolume
+
+router = APIRouter(prefix="/progress", tags=["progress"])
+
+
+@router.get("/records", response_model=list[PersonalRecord])
+async def personal_records(
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """The caller's heaviest set per exercise — their PRs."""
+    return await ProgressRepo(session).personal_records(user_id)
+
+
+@router.get("/volume", response_model=list[WeeklyVolume])
+async def weekly_volume(
+    weeks: int = Query(4, ge=1, le=52, description="Number of weeks back to total"),
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Total training volume per week over the last `weeks` weeks."""
+    return await ProgressRepo(session).weekly_volume(user_id, weeks)
+
+
+@router.get("/exercises/{exercise_id}", response_model=list[ExerciseTrendPoint])
+async def exercise_trend(
+    exercise_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """One exercise's per-session trend — top weight and volume over time."""
+    return await ProgressRepo(session).exercise_trend(user_id, exercise_id)
+```
+
+include มันใน `app/main.py` — router สุดท้ายที่ backend เพิ่ม:
+
+```python
+# app/main.py
+from app.routers import exercises, progress, workouts
+
+app.include_router(exercises.router)
+app.include_router(workouts.router)
+app.include_router(progress.router)
+```
+
+## Verify
+
+ขอ token แล้วให้แน่ใจว่าคุณ log สัก session ไว้ (ดู [Logging sessions →](/fittrack/th/workouts/logging-sessions/#verify)) ดึง personal record ของคุณ:
+
+```bash
+TOKEN=$(curl -s "http://127.0.0.1:54321/auth/v1/token?grant_type=password" \
+  -H "apikey: $SUPABASE_ANON_KEY" -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"password123"}' | jq -r .access_token)
+
+curl -s localhost:8000/progress/records -H "Authorization: Bearer $TOKEN" | jq
+```
+
+```json
+[
+  {
+    "exercise_id": "…",
+    "exercise_name": "Back Squat",
+    "best_weight_kg": 102.5,
+    "reps": 5,
+    "achieved_at": "2026-07-14T09:30:00Z"
+  },
+  {
+    "exercise_id": "…",
+    "exercise_name": "Bench Press",
+    "best_weight_kg": 65.0,
+    "reps": 6,
+    "achieved_at": "2026-07-14T18:05:00Z"
+  }
+]
+```
+
+Weekly volume — window default แล้วก็ระบุชัด ๆ:
+
+```bash
+curl -s "localhost:8000/progress/volume" -H "Authorization: Bearer $TOKEN" | jq
+curl -s "localhost:8000/progress/volume?weeks=12" -H "Authorization: Bearer $TOKEN" | jq length
+```
+
+```json
+[
+  { "week_start": "2026-07-13T00:00:00Z", "volume_kg": 2467.5 }
+]
+```
+
+ยืนยันขอบเขตของ parameter: `weeks=0` ถูกปฏิเสธด้วย `422` ไม่เคยไปถึง query:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" \
+  "localhost:8000/progress/volume?weeks=0" -H "Authorization: Bearer $TOKEN"
+```
+
+```txt
+422
+```
+
+สุดท้าย trend ของ exercise ตัวเดียว (reuse id จาก `GET /exercises`):
+
+```bash
+EX=$(curl -s localhost:8000/exercises -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id')
+curl -s localhost:8000/progress/exercises/$EX -H "Authorization: Bearer $TOKEN" \
+  | jq 'map({performed_at, top_weight_kg, volume_kg})'
+```
+
+```json
+[
+  { "performed_at": "2026-07-07T09:00:00Z", "top_weight_kg": 95.0, "volume_kg": 1900.0 },
+  { "performed_at": "2026-07-14T09:30:00Z", "top_weight_kg": 102.5, "volume_kg": 2050.0 }
+]
+```
+
+เก่าสุดก่อน เพื่อให้ chart อ่านจากซ้ายไปขวาและเห็น trend ขาขึ้น เป็นการเช็คสุดท้ายว่า backend ทั้งหมดต่อกันติด เปิด [http://localhost:8000/docs](http://localhost:8000/docs) — ทุก route จากทั้งสาม module (exercises, workouts, progress) ถูก list พร้อม request และ response schema ของมัน เป็น API contract ครบที่ client จะ build ทับ
+
+ตรวจสอบความเข้าใจ:
+
+- repo คืนแถวที่มี column ถูกต้องอยู่แล้ว การห่อมันใน `PersonalRecord`/`WeeklyVolume` ผ่าน `response_model` เพิ่มอะไรที่การคืนแถวดิบไม่มี?
+- `weeks` มี `Query(4, ge=1, le=52)` แต่ละ argument จากสามตัวทำอะไร และเกิดอะไรขึ้นกับ request ที่ `weeks=100`?
+- `exercise_trend` เรียงเก่าสุดก่อน ขณะที่ *history* ของ workout เรียงใหม่สุดก่อน ทำไม trend ถึงต้องการลำดับตรงข้าม?
+- ทุก progress query filter บน `Workout.user_id == caller` ไล่ดูว่า `GET /progress/records` คืนอะไรสำหรับ user ที่ไม่มี workout log ไว้ และทำไมถึงไม่มีโค้ด special-case สำหรับกรณีนั้น
+
+## Recap
+
+`app/routers/progress.py` ทำให้ backend เสร็จสมบูรณ์: `GET /progress/records` (personal records), `GET /progress/volume?weeks=N` (weekly volume, `weeks` เป็น `Query(4, ge=1, le=52)` ที่มีขอบเขต) และ `GET /progress/exercises/{id}` (per-session trend ของ exercise ตัวเดียว, เก่าสุดก่อน) — แต่ละอัน read-only, scope ให้เจ้าของ และ delegate ให้ `ProgressRepo` **response schema** ที่มี type (`PersonalRecord`, `WeeklyVolume`, `ExerciseTrendPoint`) เปลี่ยนแถว aggregation ไม่มีชื่อให้เป็น contract ที่ validate แล้วและ document ไว้ ซึ่ง `/docs` publish ให้ทีม client เมื่อ router ทั้งสามต่อสายเข้า `app/main.py` แล้ว FitTrack API ก็ครบ: auth, exercises, workouts และ progress ตรวจสอบครบ end to end ด้วย Supabase JWT กับ `curl` ต่อไป client เริ่มต้น — [Flutter — Foundation →](/fittrack/th/flutter-foundation/) ตั้ง mobile app: Riverpod, Supabase sign-in และ API client ที่มี type ที่แนบ JWT แล้วเรียก endpoint พวกนี้เป๊ะ ๆ
