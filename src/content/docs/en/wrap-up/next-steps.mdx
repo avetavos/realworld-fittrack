@@ -1,0 +1,60 @@
+---
+title: Next steps
+description: "Where FitTrack goes from here: concrete extensions — training programs, social, nutrition, offline sync, push notifications, real observability, CI/CD, rate limiting and caching — each with what it teaches and exactly where it plugs into the system you already built. The final page of the course, closing back to the architecture and the GitHub repo."
+sidebar:
+  order: 2
+---
+
+## Where FitTrack goes from here
+
+You have a deployed, honest slice of a product: two clients, one FastAPI backend, managed Supabase, tests, and a container in the cloud. The [recap →](/fittrack/en/wrap-up/recap/) named what was deliberately left out. This page turns those omissions — and a few production concerns — into a roadmap. Each extension lists **what it teaches** and **where it plugs in**, so none of it is a rewrite; every one hangs off a seam you already built.
+
+Pick by what you want to learn next, not by order.
+
+### Training programs & plans
+
+- **Teaches:** modelling prescriptive data (a plan is a *template* of future work) and generating scheduled sessions from it — a genuinely different shape from the "log what happened" tables you have.
+- **Plugs in:** new `programs` / `plan_days` tables via a [Supabase migration](/fittrack/en/supabase/schema-and-migrations/), a `programs` router alongside [workouts](/fittrack/en/workouts/logging-sessions/), and a "start today's session from my plan" action in the [Flutter tracking UI](/fittrack/en/flutter-tracking/logging-ui/).
+
+### Social & sharing
+
+- **Teaches:** many-to-many relationships (follows), visibility rules, and feeds — the first time your [RLS policies](/fittrack/en/supabase/auth-and-rls/) grant read access *across* users instead of fencing each to their own rows.
+- **Plugs in:** a `follows` table and a `GET /feed` endpoint on the backend; the `is_public` flag already on `exercises` is the pattern to extend to workouts.
+
+### Nutrition tracking
+
+- **Teaches:** integrating a third-party food/barcode API and aggregating a second metric stream (calories, macros) next to training volume.
+- **Plugs in:** an entirely new `nutrition` router and tables, sharing the same [auth dependency](/fittrack/en/auth/verify-the-jwt/) and [repository pattern](/fittrack/en/domain/schemas-and-repositories/) — a clean test of whether your domain layer really is reusable.
+
+### Offline sync in Flutter
+
+- **Teaches:** local-first mobile data — a device cache (Drift/SQLite), an outbox queue, and conflict resolution when a phone reconnects. The hardest item here, and the most valuable.
+- **Plugs in:** wraps the [Flutter API client](/fittrack/en/flutter-foundation/api-client/) so writes hit a local store first and sync later; the backend endpoints don't change, which is the point.
+
+### Push notifications
+
+- **Teaches:** device token registration, a server-side trigger, and delivery through APNs/FCM — event-driven work that reaches *out* to a user instead of answering a request.
+- **Plugs in:** a `device_tokens` table, a background task in FastAPI ("your rest timer is up", "a friend shared a workout"), and Supabase Auth's user id as the join key.
+
+### Real observability
+
+- **Teaches:** seeing production — structured logging, distributed traces with **OpenTelemetry**, and error reporting with **Sentry** — so you diagnose the deployed API instead of guessing.
+- **Plugs in:** OTel middleware on the [FastAPI app](/fittrack/en/fastapi/app-and-config/) and the Sentry SDK in both clients; the `/health` check from Module 1 becomes one signal among many.
+
+### CI/CD for the monorepo
+
+- **Teaches:** automating a repo with two build systems — run [pytest](/fittrack/en/testing/pytest-backend/) and [Flutter tests](/fittrack/en/testing/flutter-widget-tests/) on every push, then build and deploy the [container](/fittrack/en/deployment/containerize-the-api/) on green.
+- **Plugs in:** a GitHub Actions workflow with path filters so a change under `api/` doesn't rebuild the Flutter app, wiring straight into the [Fly.io deploy](/fittrack/en/deployment/hosted-supabase-and-clients/) you did by hand.
+
+### Rate limiting & caching
+
+- **Teaches:** protecting and speeding up the backend — per-user rate limits and caching hot reads (the [progress aggregations](/fittrack/en/progress/aggregation-queries/) are the obvious candidate, since they recompute the same numbers).
+- **Plugs in:** middleware plus a Redis instance the API talks to; the [`get_current_user`](/fittrack/en/auth/current-user/) id becomes the natural rate-limit key.
+
+## The end of the course
+
+That's FitTrack. You started with an empty directory and `uv`, and you finish with a deployed native app, a web companion, a tested FastAPI backend, and managed Supabase behind it — plus a set of architectural decisions you can [defend and a clear map](/fittrack/en/wrap-up/recap/) of everything the system does and everything it deliberately doesn't.
+
+If you want to revisit the shape of the whole thing, the [architecture overview →](/fittrack/en/introduction/architecture/) reads differently now that you've built every box in its diagram.
+
+The complete source lives at **[github.com/avetavos/realworld-fittrack](https://github.com/avetavos/realworld-fittrack)** — clone it, fork it, and take it wherever you like. Whatever you build next, you now know how the pieces fit. Go log some sets.

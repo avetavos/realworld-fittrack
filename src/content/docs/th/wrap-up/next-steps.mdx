@@ -1,0 +1,60 @@
+---
+title: Next steps
+description: "FitTrack ไปทางไหนต่อจากนี้: ส่วนขยายที่เป็นรูปธรรม — training programs, social, nutrition, offline sync, push notifications, observability จริง, CI/CD, rate limiting และ caching — แต่ละอันพร้อมสิ่งที่มันสอนและตำแหน่งที่มันเสียบเข้ากับระบบที่คุณสร้างไว้แล้ว หน้าสุดท้ายของคอร์ส ปิดวงกลับไปที่ architecture และ GitHub repo"
+sidebar:
+  order: 2
+---
+
+## Where FitTrack goes from here
+
+คุณมี slice ของ product ที่ deploy แล้วและซื่อตรง: client สองตัว, FastAPI backend เดียว, managed Supabase, tests, และ container บน cloud [recap →](/fittrack/th/wrap-up/recap/) บอกชื่อสิ่งที่ตั้งใจตัดออกไปแล้ว หน้านี้เปลี่ยนการละเว้นเหล่านั้น — บวกกับข้อกังวลเรื่อง production อีกไม่กี่อย่าง — ให้เป็น roadmap แต่ละส่วนขยายลิสต์ **สิ่งที่มันสอน** และ **ที่ที่มันเสียบเข้า** ไม่มีอันไหนเป็นการเขียนใหม่ ทุกอันห้อยอยู่บน seam ที่คุณสร้างไว้แล้ว
+
+เลือกตามสิ่งที่คุณอยากเรียนต่อ ไม่ใช่ตามลำดับ
+
+### Training programs & plans
+
+- **Teaches:** การ model ข้อมูลแบบ prescriptive (plan คือ *template* ของงานในอนาคต) และการ generate scheduled session จากมัน — รูปร่างที่ต่างจริง ๆ จากตาราง "log สิ่งที่เกิดขึ้น" ที่คุณมี
+- **Plugs in:** ตาราง `programs` / `plan_days` ใหม่ผ่าน [Supabase migration](/fittrack/th/supabase/schema-and-migrations/), router `programs` ข้าง ๆ [workouts](/fittrack/th/workouts/logging-sessions/), และ action "เริ่ม session วันนี้จาก plan ของฉัน" ใน [Flutter tracking UI](/fittrack/th/flutter-tracking/logging-ui/)
+
+### Social & sharing
+
+- **Teaches:** ความสัมพันธ์ many-to-many (follows), visibility rules, และ feeds — ครั้งแรกที่ [RLS policies](/fittrack/th/supabase/auth-and-rls/) ของคุณให้สิทธิ์อ่าน *ข้าม* user แทนที่จะกั้นแต่ละคนให้อยู่แต่ row ของตัวเอง
+- **Plugs in:** ตาราง `follows` และ endpoint `GET /feed` บน backend; flag `is_public` ที่มีอยู่แล้วบน `exercises` คือ pattern ที่ต่อยอดไปยัง workouts ได้
+
+### Nutrition tracking
+
+- **Teaches:** การ integrate third-party food/barcode API และการ aggregate metric stream ที่สอง (แคลอรี, มาโคร) เคียงข้างกับ training volume
+- **Plugs in:** router `nutrition` และตารางใหม่ทั้งชุด โดยใช้ [auth dependency](/fittrack/th/auth/verify-the-jwt/) และ [repository pattern](/fittrack/th/domain/schemas-and-repositories/) เดียวกัน — เป็น test ที่สะอาดว่า domain layer ของคุณ reuse ได้จริงหรือไม่
+
+### Offline sync in Flutter
+
+- **Teaches:** ข้อมูล mobile แบบ local-first — device cache (Drift/SQLite), outbox queue, และ conflict resolution เมื่อโทรศัพท์ reconnect ยากที่สุดในหน้านี้ และมีค่ามากที่สุด
+- **Plugs in:** ห่อ [Flutter API client](/fittrack/th/flutter-foundation/api-client/) เพื่อให้การเขียนไปลง local store ก่อนแล้ว sync ทีหลัง; endpoint ของ backend ไม่เปลี่ยน ซึ่งนั่นคือประเด็น
+
+### Push notifications
+
+- **Teaches:** การ register device token, server-side trigger, และการ deliver ผ่าน APNs/FCM — งานแบบ event-driven ที่เอื้อม *ออกไป* หา user แทนที่จะตอบ request
+- **Plugs in:** ตาราง `device_tokens`, background task ใน FastAPI ("rest timer ของคุณหมดแล้ว", "เพื่อนแชร์ workout"), และ user id ของ Supabase Auth เป็น join key
+
+### Real observability
+
+- **Teaches:** การมองเห็น production — structured logging, distributed traces ด้วย **OpenTelemetry**, และ error reporting ด้วย **Sentry** — เพื่อให้คุณ diagnose API ที่ deploy แล้วแทนที่จะเดา
+- **Plugs in:** OTel middleware บน [FastAPI app](/fittrack/th/fastapi/app-and-config/) และ Sentry SDK ใน client ทั้งสอง; `/health` check จาก Module 1 กลายเป็นสัญญาณหนึ่งในหลาย ๆ ตัว
+
+### CI/CD for the monorepo
+
+- **Teaches:** การ automate repo ที่มี build system สองแบบ — รัน [pytest](/fittrack/th/testing/pytest-backend/) และ [Flutter tests](/fittrack/th/testing/flutter-widget-tests/) ทุกครั้งที่ push แล้ว build และ deploy [container](/fittrack/th/deployment/containerize-the-api/) เมื่อเขียว
+- **Plugs in:** GitHub Actions workflow ที่มี path filter เพื่อให้การเปลี่ยนใต้ `api/` ไม่ทำให้ต้อง rebuild Flutter app ต่อสายตรงเข้ากับ [Fly.io deploy](/fittrack/th/deployment/hosted-supabase-and-clients/) ที่คุณทำด้วยมือ
+
+### Rate limiting & caching
+
+- **Teaches:** การปกป้องและเร่ง backend — per-user rate limit และการ cache read ที่ร้อน ([progress aggregations](/fittrack/th/progress/aggregation-queries/) คือตัวเลือกชัดเจน เพราะมันคำนวณตัวเลขเดิมซ้ำ)
+- **Plugs in:** middleware บวก Redis instance ที่ API คุยด้วย; id จาก [`get_current_user`](/fittrack/th/auth/current-user/) กลายเป็น rate-limit key ตามธรรมชาติ
+
+## The end of the course
+
+นั่นคือ FitTrack คุณเริ่มจาก directory ว่างเปล่ากับ `uv` และจบด้วย native app ที่ deploy แล้ว, web companion, FastAPI backend ที่มี test, และ managed Supabase อยู่เบื้องหลัง — บวกกับชุดการตัดสินใจเชิงสถาปัตยกรรมที่คุณ [defend และ map ได้ชัด](/fittrack/th/wrap-up/recap/) ของทุกอย่างที่ระบบทำและทุกอย่างที่มันตั้งใจไม่ทำ
+
+ถ้าคุณอยากกลับไปดูรูปร่างของทั้งหมดอีกครั้ง [architecture overview →](/fittrack/th/introduction/architecture/) อ่านแล้วรู้สึกต่างออกไปตอนนี้ที่คุณสร้างทุกกล่องใน diagram ของมันมาแล้ว
+
+Source เต็มอยู่ที่ **[github.com/avetavos/realworld-fittrack](https://github.com/avetavos/realworld-fittrack)** — clone มัน, fork มัน, แล้วพามันไปที่ไหนก็ได้ที่คุณชอบ ไม่ว่าคุณจะสร้างอะไรต่อ ตอนนี้คุณรู้แล้วว่าชิ้นส่วนต่าง ๆ ประกอบกันอย่างไร ไป log some sets กัน
