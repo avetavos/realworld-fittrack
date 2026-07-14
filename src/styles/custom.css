@@ -1,0 +1,7 @@
+:root { --sl-color-accent: #3776AB; --sl-color-accent-low: #10222f; --sl-color-accent-high: #c3d9ea; }
+.stack-badges { display:flex; gap:.4rem; flex-wrap:wrap; margin:1rem 0; }
+.stack-badges span { font-size:.75rem; border:1px solid var(--sl-color-gray-5); border-radius:999px; padding:.1rem .6rem; }
+
+/* Mermaid diagrams (rendered client-side by /fittrack/mermaid-init.js) */
+.mermaid { display: flex; justify-content: center; margin: 1.5rem 0; }
+.mermaid svg { max-width: 100%; height: auto; }

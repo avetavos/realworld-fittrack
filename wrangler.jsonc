@@ -1,0 +1,17 @@
+{
+  // Cloudflare Worker (static assets) for the FitTrack guide.
+  // The site is built with Astro `base: '/fittrack'`, so the built files must be
+  // served under a `/fittrack/` path. `npm run deploy` stages `dist/` into
+  // `.cf-assets/fittrack/` and serves `.cf-assets` as the asset root.
+  "name": "realworld-fittrack",
+  "compatibility_date": "2024-09-23",
+  "assets": {
+    "directory": "./.cf-assets"
+  },
+  // projects.avetavos.com is the shared host (taskflow owns it as a custom
+  // domain). FitTrack is served under /fittrack/* (Astro base) via a
+  // more-specific Workers route, the same way DevBlog and ShopMicro are.
+  "routes": [
+    { "pattern": "projects.avetavos.com/fittrack/*", "zone_name": "avetavos.com" }
+  ]
+}
