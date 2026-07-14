@@ -1,0 +1,165 @@
+---
+title: Schema and migrations
+description: "สี่ table ของ FitTrack — profiles, exercises, workouts, workout_sets — modelling เป็น Supabase migration ที่อยู่ใน version control สร้างด้วย supabase migration new เขียน CREATE TABLE DDL เอง แล้ว apply ลง local stack ด้วย supabase db reset เพื่อให้ database ถูก rebuild จากไฟล์แบบ deterministic ทำไม schema ถึงอยู่ใน migration ไม่ใช่คลิกใน Studio และทำไมทุก table ถึงห้อยอยู่กับ auth.users ผ่าน profiles ตรวจสอบด้วย supabase migration list และ psql \\dt ที่แสดง table ครบทั้งสี่"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+database ที่ FitTrack สร้างอยู่บน: **สี่ table** — `profiles`, `exercises`, `workouts`, และ `workout_sets` — สร้างเป็น **Supabase migration** เดียว ใน [The Supabase project →](/fittrack/th/setup/supabase-project/) คุณตั้ง Postgres แบบ local ขึ้นมาด้วย `supabase start` database ตัวนั้นตอนนี้ยังว่างอยู่ บทนี้จะให้รูปร่างกับมัน
+
+คุณจะสร้างไฟล์ migration ด้วย `supabase migration new` เขียน statement `CREATE TABLE` ลงไปเอง แล้ว apply ทั้งหมดลง local stack ด้วย `supabase db reset` — ซึ่ง drop database ทิ้งแล้ว rebuild ใหม่จากไฟล์ migration ของคุณ ดังนั้น schema เป็นสิ่งที่ SQL ใน version control บอกไว้เป๊ะ ๆ เสมอ ยังไม่มี application code ตอนนี้เป็น data modelling ล้วน ๆ การต่อสาย auth และ row-level security มาต่อในบท [Auth and RLS →](/fittrack/th/supabase/auth-and-rls/) ตรงนี้เราวาง table ที่ policy พวกนั้นจะปกป้องไว้ก่อน
+
+## Why
+
+ขอบเขต product ของ FitTrack เล็กโดยตั้งใจ: log workout แล้วดู progress เท่านั้น ซึ่งย่อลงเหลือสี่ table กับความสัมพันธ์ระหว่างกัน:
+
+- **`profiles`** — หนึ่ง row ต่อหนึ่ง user, 1:1 กับ `auth.users` ของ Supabase เอง Supabase เป็นเจ้าของ authentication (email, password, token) ใน schema `auth` คุณไม่เคยเขียนลง `auth.users` ตรง ๆ `profiles` เป็น table *ของคุณ* key ด้วย `id` เดียวกัน เก็บข้อมูลระดับ application เกี่ยวกับ user (display name ตอนนี้) ทุก table อื่นชี้ไปที่ `profiles` ไม่ใช่ `auth.users` — ดังนั้น app พึ่งพา schema ของคุณ ส่วน internal ของ Supabase อยู่หลัง boundary ที่คุณควบคุม
+- **`exercises`** — catalog table เดียวรองรับทั้ง exercise ที่ seed ไว้และแชร์กันทุกคนเห็น (`created_by` เป็น `null`, `is_public` เป็น true) และ exercise ที่ user สร้างเอง(`created_by` ตั้งเป็น id ของเขา) หนึ่ง table ที่มี owner แบบ nullable ดีกว่าสอง table ที่แทบเหมือนกัน
+- **`workouts`** — หนึ่ง session ที่ log ไว้ มันเป็นของ user และบันทึกว่ามันเกิดขึ้นเมื่อไหร่
+- **`workout_sets`** — set แต่ละอันภายใน workout: exercise นี้ กี่ reps ที่น้ำหนักเท่านี้ ในลำดับนี้ workout หนึ่งมีหลาย set; set หนึ่งอ้างถึง exercise เดียว นี่คือที่ที่ training data จริงอยู่
+
+รูปร่างเป็น hierarchy ตรงไปตรงมา — user มี workouts, workout มี sets, set อ้างถึง exercise — และ foreign key เขียนมันออกมาชัด ๆ `on delete cascade` ลงมาตาม chain นี้หมายความว่าการลบ workout จะลบ set ของมันอัตโนมัติ และการลบ user (ใน `auth.users`) จะ cascade ไปถึง profile, workouts, และ sets ของเขา ดังนั้นไม่มี orphan row ให้ต้องมาเก็บกวาดเอง
+
+ครึ่งหลังของ "why" คือ *วิธี* ที่ schema ถูก define: เป็น **ไฟล์ migration** ไม่ใช่การคลิกต่อ table เข้าด้วยกันใน Studio migration คือไฟล์ `.sql` ที่มี timestamp อยู่ใน `supabase/migrations/` มันเป็นโค้ด — review ใน pull request, apply เหมือนกันเป๊ะทุก local stack ของ developer และกับ hosted project ตอน deploy และเล่นซ้ำใหม่ตั้งแต่ต้นได้ `supabase db reset` โยน local database ทิ้งแล้ว re-run ทุก migration ตามลำดับ ซึ่งหมายความว่า database *สร้างใหม่* จาก repo ได้เสมอ schema ที่สร้างด้วยการคลิกใน dashboard มีอยู่แค่ใน database ตัวนั้นตัวเดียว และ drift ทันทีที่มีคนสองคนแตะมัน
+
+## Pros & cons
+
+**SQL migration ที่อยู่ใน version control** เทียบกับ **แก้ schema ใน Supabase Studio**
+
+- **Pros:** schema เป็นโค้ด — diff ได้ review ได้ และ apply เหมือนกันทุก environment; clone ใหม่แล้ว `supabase db reset` reproduce database เป๊ะเดียวกันโดยไม่ต้องทำอะไรเองสักขั้น; และ local stack กับ hosted project ไม่มีทาง diverge เงียบ ๆ เพราะทั้งคู่สร้างจากไฟล์เดียวกัน
+- **Cons:** คุณเขียน SQL เองแทนที่จะกรอกฟอร์มแบบ visual ซึ่งลงแรงตอนต้นมากกว่านิดหน่อยและสมมติว่าคุณคุ้นกับ DDL; การ point-and-click ของ Studio เร็วกว่าสำหรับ database ใช้ครั้งเดียวทิ้ง FitTrack ไม่ใช่ทั้งใช้ครั้งเดียวและไม่ใช่ทิ้ง migration จึงชนะแบบสบาย ๆ
+
+**`supabase db reset` (rebuild จากทุก migration)** เทียบกับ **apply `ALTER` แบบ incremental ด้วยมือกับ database ที่กำลังรัน**
+
+- **Pros:** ทุกครั้งที่ reset พิสูจน์ว่าประวัติ migration *ทั้งหมด* ยัง apply ได้สะอาดจาก database ที่ว่างเปล่า จับ migration ที่พังได้ทันทีแทนที่จะรอตอน deploy; local database ทิ้งได้และอยู่ในสถานะที่รู้แน่เสมอ; seed data ก็ re-apply ได้ในขั้นเดียวกัน
+- **Cons:** reset drop local data ทั้งหมด มันจึงเป็น move สำหรับ development ไม่ใช่สิ่งที่คุณรันกับ production (ที่นั่นคุณ *forward-apply* migration ใหม่ด้วย `supabase db push`); และเมื่อประวัติยาวขึ้น การ reset เต็มจะ re-run ทุก migration ซึ่งช้ากว่าการ apply แค่ตัวใหม่สุดเล็กน้อย สำหรับ local development การรับประกัน database ที่สะอาดและ reproduce ได้นั้นคุ้ม
+
+## Set it up
+
+### 1. Create the migration
+
+จาก repo root (โฟลเดอร์ที่มี `supabase/` ซึ่ง `supabase init` สร้างไว้ตั้งแต่ [The Supabase project →](/fittrack/th/setup/supabase-project/)):
+
+```bash
+supabase migration new create_core_schema
+```
+
+คำสั่งนี้เขียนไฟล์เปล่าที่มี timestamp แล้วพิมพ์ path ของมันออกมา:
+
+```txt
+Created new migration at supabase/migrations/20260714120000_create_core_schema.sql
+```
+
+prefix ที่เป็น timestamp คือสิ่งที่ตรึงลำดับการรันของ migration ไว้ — อย่าเปลี่ยนชื่อมันเด็ดขาด
+
+### 2. `supabase/migrations/<timestamp>_create_core_schema.sql`
+
+เปิดไฟล์ที่เพิ่งถูกสร้างแล้วเขียนสี่ table ลงไป:
+
+```sql
+-- profiles: 1:1 with Supabase auth.users. This is the application-level
+-- user record; auth.users (emails, passwords) stays owned by Supabase.
+create table profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  display_name text not null default '',
+  created_at timestamptz not null default now()
+);
+
+-- exercises: one catalog for both the shared, seeded exercises
+-- (created_by null, is_public true) and a user's own exercises.
+create table exercises (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  muscle_group text not null,
+  is_public boolean not null default false,
+  created_by uuid references profiles(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+-- workouts: one logged training session, owned by a user.
+create table workouts (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  performed_at timestamptz not null default now(),
+  notes text,
+  created_at timestamptz not null default now()
+);
+
+-- workout_sets: the sets inside a workout — exercise, reps, weight, order.
+-- Deleting the workout cascades to its sets; the exercise reference does not.
+create table workout_sets (
+  id uuid primary key default gen_random_uuid(),
+  workout_id uuid not null references workouts(id) on delete cascade,
+  exercise_id uuid not null references exercises(id),
+  set_index int not null,
+  reps int not null,
+  weight_kg numeric(6,2) not null,
+  created_at timestamptz not null default now()
+);
+```
+
+มีตัวเลือกไม่กี่อย่างที่ควรพูดถึง primary key เป็น `uuid` ที่ default ด้วย `gen_random_uuid()` (built-in ใน Postgres รุ่นใหม่) แทน integer ที่ auto-increment ดังนั้น id เดาไม่ได้และปลอดภัยที่จะ expose ใน URL รวมถึง generate ฝั่ง client ได้ `weight_kg` เป็น `numeric(6,2)` — decimal แบบ exact ไม่ใช่ floating point — เพราะมันเป็นปริมาณที่วัดได้ซึ่งคุณจะ sum เพื่อคิด volume และ float rounding ไม่มีที่ยืนตรงนั้น และ `workout_sets.exercise_id` **ไม่มี** `on delete cascade`: การลบ workout ควรลบ set ของมัน แต่คุณไม่ควรลบ exercise ออกไปจากใต้ประวัติที่อ้างถึงมันได้เลย
+
+### 3. Apply it to the local database
+
+```bash
+supabase db reset
+```
+
+`supabase db reset` drop local database แล้วเล่นซ้ำทุก migration ใน `supabase/migrations/` ตั้งแต่ต้น — ดังนั้นมัน apply ไฟล์ใหม่ของคุณกับ Postgres ที่สะอาด:
+
+```txt
+Resetting local database...
+Applying migration 20260714120000_create_core_schema.sql...
+Finished supabase db reset on branch main.
+```
+
+SQL error ใด ๆ จะหยุด reset แล้วพิมพ์บรรทัดที่มีปัญหาออกมา ซึ่งเป็น feedback เร็ว ๆ ที่คุณต้องการพอดีตอน iterate schema
+
+## Verify
+
+ยืนยันว่า migration ถูก register:
+
+```bash
+supabase migration list
+```
+
+```txt
+   LOCAL      │     REMOTE     │     TIME (UTC)
+  ────────────┼────────────────┼──────────────────────
+   20260714120000 │                │ 2026-07-14 12:00:00
+```
+
+แล้ว connect ด้วย `psql` และ list table เพื่อพิสูจน์ว่ามันถูกสร้างจริง:
+
+```bash
+psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "\dt"
+```
+
+```txt
+        List of relations
+ Schema │     Name     │ Type  │  Owner
+────────┼──────────────┼───────┼──────────
+ public │ exercises    │ table │ postgres
+ public │ profiles     │ table │ postgres
+ public │ workout_sets │ table │ postgres
+ public │ workouts     │ table │ postgres
+(4 rows)
+```
+
+คุณเปิด **Studio** ที่ [http://127.0.0.1:54323](http://127.0.0.1:54323) → **Table Editor** ก็ได้ แล้วจะเห็นสี่ table เดียวกันพร้อม column และ foreign key ถูกวาดออกมา
+
+สุดท้าย check ที่สำคัญที่สุดสำหรับ migration — ว่าประวัติทั้งหมด rebuild จากศูนย์ได้ รัน `supabase db reset` อีกครั้ง; มันควร re-apply migration โดยไม่มี error และทิ้งสี่ table เดิมไว้ให้คุณ ถ้า reset ล้มเหลวเมื่อไหร่ แปลว่ามี migration พัง และคุณอยากรู้ตอนนี้ ไม่ใช่ตอน deploy
+
+ตรวจสอบความเข้าใจ:
+
+- ทำไมทุก table ถึงอ้างถึง `profiles` แทนที่จะเป็น `auth.users` ตรง ๆ ทั้งที่มี row-per-user ในทั้งสองที่ boundary อะไรที่มันรักษาไว้?
+- `workout_sets.workout_id` cascade ตอนลบ แต่ `workout_sets.exercise_id` ไม่ อะไรจะพังถ้า `exercise_id` cascade ด้วย?
+- `supabase db reset` ทำอะไรที่การ apply `ALTER TABLE` ตัวเดียวด้วยมือไม่ทำ และทำไมการรับประกันนั้นถึงมีค่าก่อน deploy?
+- ทำไม `weight_kg` ถึงประกาศเป็น `numeric(6,2)` แทนที่จะเป็น floating-point type ในเมื่อคุณจะ sum มันทีหลังเพื่อคำนวณ training volume?
+
+## Recap
+
+database ของ FitTrack คือ **สี่ table** — `profiles` (1:1 กับ `auth.users` ของ Supabase, user record ที่ app เป็นเจ้าของ), `exercises` (catalog เดียวสำหรับทั้งของแชร์และของที่ user สร้าง), `workouts` (session ที่ log ไว้), และ `workout_sets` (set ภายในมัน) — define เป็น **migration เดียวที่อยู่ใน version control** คุณสร้างมันด้วย `supabase migration new` เขียน `CREATE TABLE` DDL เองด้วย primary key แบบ `uuid`, น้ำหนักแบบ `numeric` แบบ exact, และ foreign key ที่ cascade ลงมาตาม chain ของ ownership แล้ว apply ด้วย `supabase db reset` ซึ่ง rebuild local database แบบ deterministic จากทุกไฟล์ migration `supabase migration list` กับ `psql \dt` ยืนยันว่าสี่ table มีอยู่ และการ reset ครั้งที่สองพิสูจน์ว่าประวัติเล่นซ้ำได้สะอาด table อยู่ที่แล้วแต่ยังเปิดโล่ง — ยังไม่มีอะไรผูก row ของ `workouts` เข้ากับ user ที่มีสิทธิ์อ่านมัน ต่อไป [Auth and RLS →](/fittrack/th/supabase/auth-and-rls/) เปิด email authentication, auto-create row ใน `profiles` ให้ user ใหม่ทุกคนด้วย database trigger, และล็อกทุก table ด้วย row-level security

@@ -1,0 +1,202 @@
+---
+title: Auth and RLS
+description: "Turn on Supabase email auth, auto-create a profiles row for every new user with a trigger on auth.users, and lock the four tables down with row-level security. Written as a second migration so the security rules are version-controlled alongside the schema. Why the profile bootstrap belongs in a database trigger and why RLS is defense-in-depth behind the FastAPI gate, not the primary access path. Verified by signing up a test user against the local Auth API and watching a profile row appear."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+The security layer over the four tables from [Schema and migrations →](/fittrack/en/supabase/schema-and-migrations/): **email authentication**, an automatic **`profiles` row for every new user**, and **row-level security (RLS)** policies that stop one user from reading another's data at the database itself.
+
+Three pieces, in one new migration plus a config change:
+
+1. **Email auth on** — flip signup on in the local stack's config so users can register with an email and password.
+2. **The profile bootstrap** — a trigger on `auth.users` that inserts a matching `profiles` row the instant Supabase creates a user, so every authenticated user always has a profile without the application having to remember to create one.
+3. **RLS policies** — enable row-level security on all four tables and write policies that scope each user to their own rows (plus public read of shared exercises).
+
+By the end, a user can sign up, a profile appears for them automatically, and the tables refuse to hand one user another user's workouts even if something bypassed the API. This is the last Supabase Foundation lesson; after it, [FastAPI Foundation →](/fittrack/en/fastapi/) starts building the backend that becomes the primary gate in front of all this.
+
+## Why
+
+**Auth** is the reason FitTrack uses Supabase at all — signup, password hashing, token issuance, and refresh are a large, security-critical surface you get correct for free from GoTrue (the Auth server `supabase start` runs). Turning it on locally is a one-line config change; the important design question is what happens *after* a user is created.
+
+Every user needs a `profiles` row — it's what every `workouts` and `exercises` row points at. You could create that profile from application code right after signup, but that's fragile: it only runs if signup happens through your code path, it can fail independently of the user being created (leaving a user with no profile), and it has to be duplicated in every client. Instead, FitTrack uses a **database trigger**: a function `handle_new_user()` that fires `after insert on auth.users` and inserts the matching `profiles` row in the same transaction. Now the invariant "every auth user has a profile" is guaranteed by the database, for *any* path that creates a user — the Flutter app, the Svelte app, a Studio invite, a future admin script — with no application code to forget.
+
+**RLS** is Postgres enforcing, per row, whether the current user may see or change it. With RLS enabled and a policy like `using (auth.uid() = user_id)` on `workouts`, a query only ever returns rows the requesting user owns — the filter is in the database, not in a `WHERE` clause your code has to remember. Note FitTrack's stance from the architecture: **the FastAPI backend is the primary gate**; it verifies the JWT and owns the business logic. RLS here is **defense-in-depth** — a second wall so that a bug in the API, or a client talking to Supabase directly, still can't leak data across users. Belt *and* suspenders, because the data is a user's private training history.
+
+## Pros & cons
+
+**Bootstrapping the profile with a database trigger** vs. **creating it from application code after signup**
+
+- **Pros:** the "every user has a profile" invariant holds for every path that creates a user, not just your happy-path signup code; it runs in the same transaction as the user insert, so there's no window where a user exists without a profile; and no client has to remember to do it.
+- **Cons:** the logic lives in SQL inside the database rather than in your application language, so it's a place newcomers might not think to look, and it's tested by exercising the database rather than a unit test; a `SECURITY DEFINER` function also needs writing carefully. The reliability of the invariant is worth those costs.
+
+**RLS as defense-in-depth behind the API** vs. **relying on the FastAPI gate alone**
+
+- **Pros:** a bug in the backend, a mis-scoped query, or a client that talks to Supabase directly still can't read across users, because the database itself refuses; the rule ("you see your own rows") is expressed once, next to the data, and can't be forgotten in a new endpoint.
+- **Cons:** there are now two places that express access rules — the API's authorization and the RLS policies — which must stay consistent, and RLS adds a small per-query cost and can be surprising to debug when a query returns nothing "for no reason". FitTrack accepts the duplication deliberately: for private data, a redundant second wall is a feature.
+
+## Set it up
+
+### 1. `supabase/config.toml` — enable email auth
+
+`supabase init` generated a `config.toml`. Make sure email signup is on for the local stack:
+
+```toml
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+
+[auth.email]
+enable_signup = true
+# For local development, don't require clicking a confirmation link.
+enable_confirmations = false
+```
+
+`enable_confirmations = false` lets you sign up and use an account immediately in development without an email round-trip; the hosted project keeps confirmations on.
+
+### 2. Create the security migration
+
+```bash
+supabase migration new add_auth_and_rls
+```
+
+```txt
+Created new migration at supabase/migrations/20260714130000_add_auth_and_rls.sql
+```
+
+### 3. `supabase/migrations/<timestamp>_add_auth_and_rls.sql`
+
+Write the profile-bootstrap trigger and the RLS policies into the new file:
+
+```sql
+-- ── Profile bootstrap ────────────────────────────────────────────────
+-- Create a profiles row automatically whenever Supabase creates a user.
+-- SECURITY DEFINER lets the trigger insert into profiles regardless of
+-- who caused the auth.users insert.
+create function handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into profiles (id, display_name)
+  values (new.id, coalesce(new.raw_user_meta_data ->> 'display_name', ''));
+  return new;
+end;
+$$;
+
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function handle_new_user();
+
+-- ── Row-level security ───────────────────────────────────────────────
+alter table profiles     enable row level security;
+alter table exercises    enable row level security;
+alter table workouts     enable row level security;
+alter table workout_sets enable row level security;
+
+-- profiles: a user may read and update only their own row.
+create policy "own profile is readable"
+  on profiles for select using (auth.uid() = id);
+create policy "own profile is updatable"
+  on profiles for update using (auth.uid() = id);
+
+-- exercises: public exercises are readable by anyone; a user fully
+-- manages their own (created_by = them).
+create policy "public exercises are readable"
+  on exercises for select using (is_public or auth.uid() = created_by);
+create policy "own exercises are writable"
+  on exercises for all using (auth.uid() = created_by)
+  with check (auth.uid() = created_by);
+
+-- workouts: a user sees and manages only their own sessions.
+create policy "own workouts"
+  on workouts for all using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- workout_sets: reachable only through a workout the user owns.
+create policy "own workout sets"
+  on workout_sets for all using (
+    exists (
+      select 1 from workouts
+      where workouts.id = workout_sets.workout_id
+        and workouts.user_id = auth.uid()
+    )
+  );
+```
+
+Two things to read closely. `auth.uid()` is a Supabase-provided function that returns the id of the user making the current request (from their JWT) — that's what makes `using (auth.uid() = user_id)` mean "your rows only." And `workout_sets` has no `user_id` column of its own, so its policy reaches up through the `workouts` table with an `exists` subquery: you may touch a set only if you own the workout it belongs to.
+
+### 4. Apply everything
+
+```bash
+supabase db reset
+```
+
+Reset re-runs *both* migrations — the schema, then this one — so the local database now has the four tables, the trigger, and RLS enabled:
+
+```txt
+Applying migration 20260714120000_create_core_schema.sql...
+Applying migration 20260714130000_add_auth_and_rls.sql...
+Finished supabase db reset on branch main.
+```
+
+## Verify
+
+First, prove the profile bootstrap works end to end by signing up a user against the local Auth API — the same endpoint the clients will use:
+
+```bash
+curl -s http://127.0.0.1:54321/auth/v1/signup \
+  -H "apikey: $SUPABASE_ANON_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"lifter@example.com","password":"supersecret"}'
+```
+
+You get back a user object with an `id`. Now check that the trigger created a matching `profiles` row — without any application code running:
+
+```bash
+psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+  -c "select id, display_name from profiles;"
+```
+
+```txt
+                  id                  │ display_name
+──────────────────────────────────────┼──────────────
+ 6f1c...─...─...─...─...9a2            │
+(1 row)
+```
+
+One row, appearing purely because a user was created — that's the trigger doing its job. Next, confirm RLS is actually on and the policies exist:
+
+```bash
+psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+  -c "select tablename, policyname from pg_policies where schemaname = 'public' order by tablename;"
+```
+
+```txt
+  tablename   │        policyname
+──────────────┼───────────────────────────
+ exercises    │ public exercises are readable
+ exercises    │ own exercises are writable
+ profiles     │ own profile is readable
+ profiles     │ own profile is updatable
+ workout_sets │ own workout sets
+ workouts     │ own workouts
+(6 rows)
+```
+
+Finally, the run check for the whole module: `supabase db reset` one more time and confirm both migrations apply with no errors. A clean reset means the schema *and* its security rebuild from files, exactly — which is the guarantee the hosted project relies on at deploy time.
+
+Check your understanding:
+
+- Why does the profile get created by a trigger on `auth.users` rather than by application code after signup? Name one path that would skip an application-side create but not the trigger.
+- FitTrack calls RLS "defense-in-depth" rather than its primary access control. What *is* the primary gate, and why keep RLS anyway?
+- `workout_sets` has no `user_id`, yet its policy still scopes rows to the current user. How does the policy decide whether a set is yours?
+- What does `auth.uid()` return, and where does the value come from on a real request from a signed-in client?
+
+## Recap
+
+This lesson secured the four tables. You turned on **email auth** in `config.toml`, then wrote a second migration that (1) bootstraps a **`profiles` row via a trigger** on `auth.users`, so every user Supabase creates automatically gets a profile in the same transaction, and (2) enables **row-level security** on all four tables with policies scoping each user to their own rows — `auth.uid() = user_id` on workouts, an `exists` subquery up through the owning workout for sets, and public read of shared exercises. Keeping the rules in a version-controlled migration means the security rebuilds deterministically with `supabase db reset`. RLS here is **defense-in-depth**: the FastAPI backend, built next, is the primary gate. You verified the whole thing by signing up a user against the local Auth API and watching a profile row appear, and by listing the active policies. That completes the Supabase foundation — the database has shape and guards. Next, [FastAPI Foundation →](/fittrack/en/fastapi/) stands up the Python backend that verifies Supabase's JWTs and owns every read and write against this database.

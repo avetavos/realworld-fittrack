@@ -1,0 +1,165 @@
+---
+title: Schema and migrations
+description: "FitTrack's four tables — profiles, exercises, workouts, workout_sets — modelled as a version-controlled Supabase migration. Create it with supabase migration new, write the CREATE TABLE DDL by hand, and apply it to the local stack with supabase db reset so the database is rebuilt deterministically from files. Why the schema lives in migrations, not in Studio clicks, and why every table hangs off auth.users through profiles. Verified with supabase migration list and a psql \\dt showing all four tables."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+The database FitTrack is built on: **four tables** — `profiles`, `exercises`, `workouts`, and `workout_sets` — created as a single **Supabase migration**. In [The Supabase project →](/fittrack/en/setup/supabase-project/) you stood up a local Postgres with `supabase start`; that database is currently empty. This lesson gives it a shape.
+
+You'll create a migration file with `supabase migration new`, write the `CREATE TABLE` statements into it by hand, and apply the whole thing to the local stack with `supabase db reset` — which drops the database and rebuilds it from your migration files, so the schema is always exactly what the version-controlled SQL says it is. No application code yet; this is pure data modelling. Auth wiring and row-level security come next in [Auth and RLS →](/fittrack/en/supabase/auth-and-rls/); here we lay down the tables those policies will protect.
+
+## Why
+
+FitTrack's product scope is small on purpose: log workouts and see progress. That reduces to four tables and the relationships between them:
+
+- **`profiles`** — one row per user, 1:1 with Supabase's own `auth.users`. Supabase owns authentication (emails, passwords, tokens) in the `auth` schema; you never write to `auth.users` directly. `profiles` is *your* table, keyed by the same `id`, holding the application-level facts about a user (a display name, for now). Every other table points at `profiles`, not at `auth.users` — so the app depends on your schema, and Supabase's internals stay behind a boundary you control.
+- **`exercises`** — the catalog. One table serves both the shared, seeded exercises everyone sees (`created_by` is `null`, `is_public` true) and exercises a user creates for themselves (`created_by` set to their id). One table with a nullable owner beats two near-identical tables.
+- **`workouts`** — one logged session. It belongs to a user and records when it happened.
+- **`workout_sets`** — the individual sets inside a workout: this exercise, this many reps, at this weight, in this order. A workout has many sets; a set names one exercise. This is where the actual training data lives.
+
+The shape is a straightforward hierarchy — a user has workouts, a workout has sets, a set references an exercise — and the foreign keys spell it out. `on delete cascade` down that chain means deleting a workout deletes its sets automatically, and deleting a user (in `auth.users`) cascades to their profile, workouts, and sets, so there are no orphan rows to clean up by hand.
+
+The second half of the "why" is *how* the schema is defined: as a **migration file**, not by clicking tables together in Studio. A migration is a timestamped `.sql` file in `supabase/migrations/`. It's code — reviewed in a pull request, applied identically to every developer's local stack and to the hosted project at deploy time, and replayable from scratch. `supabase db reset` throws the local database away and re-runs every migration in order, which means the database can *always* be reconstructed from the repo. A schema built by clicking in a dashboard exists only in that one database and drifts the moment two people touch it.
+
+## Pros & cons
+
+**Version-controlled SQL migrations** vs. **editing the schema in Supabase Studio**
+
+- **Pros:** the schema is code — diffable, reviewable, and applied identically to every environment; a fresh clone plus `supabase db reset` reproduces the exact database with no manual steps; and the local stack and the hosted project can never silently diverge, because both are built from the same files.
+- **Cons:** you write SQL by hand instead of filling in a visual form, which is a little more upfront effort and assumes you're comfortable with DDL; Studio's point-and-click is faster for a one-off throwaway database. FitTrack is neither one-off nor throwaway, so migrations win easily.
+
+**`supabase db reset` (rebuild from all migrations)** vs. **hand-applying incremental `ALTER`s to the running database**
+
+- **Pros:** every reset proves the *entire* migration history still applies cleanly from an empty database, catching a broken migration immediately rather than at deploy time; the local database is disposable and always in a known state; seed data can be re-applied in the same step.
+- **Cons:** reset drops all local data, so it's a development move, not something you run against production (there you *forward-apply* new migrations with `supabase db push`); and as the history grows, a full reset re-runs every migration, which is slightly slower than applying just the newest one. For local development the guarantee of a clean, reproducible database is worth it.
+
+## Set it up
+
+### 1. Create the migration
+
+From the repo root (the folder holding `supabase/`, created by `supabase init` back in [The Supabase project →](/fittrack/en/setup/supabase-project/)):
+
+```bash
+supabase migration new create_core_schema
+```
+
+This writes an empty, timestamped file and prints its path:
+
+```txt
+Created new migration at supabase/migrations/20260714120000_create_core_schema.sql
+```
+
+The timestamp prefix is what fixes the order migrations run in — never rename it.
+
+### 2. `supabase/migrations/<timestamp>_create_core_schema.sql`
+
+Open the file that was just created and write the four tables into it:
+
+```sql
+-- profiles: 1:1 with Supabase auth.users. This is the application-level
+-- user record; auth.users (emails, passwords) stays owned by Supabase.
+create table profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  display_name text not null default '',
+  created_at timestamptz not null default now()
+);
+
+-- exercises: one catalog for both the shared, seeded exercises
+-- (created_by null, is_public true) and a user's own exercises.
+create table exercises (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  muscle_group text not null,
+  is_public boolean not null default false,
+  created_by uuid references profiles(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+-- workouts: one logged training session, owned by a user.
+create table workouts (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  performed_at timestamptz not null default now(),
+  notes text,
+  created_at timestamptz not null default now()
+);
+
+-- workout_sets: the sets inside a workout — exercise, reps, weight, order.
+-- Deleting the workout cascades to its sets; the exercise reference does not.
+create table workout_sets (
+  id uuid primary key default gen_random_uuid(),
+  workout_id uuid not null references workouts(id) on delete cascade,
+  exercise_id uuid not null references exercises(id),
+  set_index int not null,
+  reps int not null,
+  weight_kg numeric(6,2) not null,
+  created_at timestamptz not null default now()
+);
+```
+
+A few choices worth naming. Primary keys are `uuid`s defaulted by `gen_random_uuid()` (built into modern Postgres) rather than auto-incrementing integers, so ids are unguessable and safe to expose in URLs and generate client-side. `weight_kg` is `numeric(6,2)` — exact decimal, not floating point — because it's a measured quantity you'll sum for volume, and float rounding has no place there. And `workout_sets.exercise_id` has **no** `on delete cascade`: deleting a workout should remove its sets, but you should never be able to delete an exercise out from under the history that references it.
+
+### 3. Apply it to the local database
+
+```bash
+supabase db reset
+```
+
+`supabase db reset` drops the local database and replays every migration in `supabase/migrations/` from scratch — so this applies your new file against a clean Postgres:
+
+```txt
+Resetting local database...
+Applying migration 20260714120000_create_core_schema.sql...
+Finished supabase db reset on branch main.
+```
+
+Any SQL error stops the reset and prints the offending line, which is exactly the fast feedback you want while iterating on the schema.
+
+## Verify
+
+Confirm the migration is registered:
+
+```bash
+supabase migration list
+```
+
+```txt
+   LOCAL      │     REMOTE     │     TIME (UTC)
+  ────────────┼────────────────┼──────────────────────
+   20260714120000 │                │ 2026-07-14 12:00:00
+```
+
+Then connect with `psql` and list the tables to prove they were actually created:
+
+```bash
+psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "\dt"
+```
+
+```txt
+        List of relations
+ Schema │     Name     │ Type  │  Owner
+────────┼──────────────┼───────┼──────────
+ public │ exercises    │ table │ postgres
+ public │ profiles     │ table │ postgres
+ public │ workout_sets │ table │ postgres
+ public │ workouts     │ table │ postgres
+(4 rows)
+```
+
+You can also open **Studio** at [http://127.0.0.1:54323](http://127.0.0.1:54323) → **Table Editor** and see the same four tables with their columns and foreign keys drawn out.
+
+Finally, the check that matters most for migrations — that the whole history rebuilds from nothing. Run `supabase db reset` once more; it should re-apply the migration with no errors and leave you with the same four tables. If a reset ever fails, a migration is broken, and you want to know now, not at deploy time.
+
+Check your understanding:
+
+- Why does every table reference `profiles` rather than `auth.users` directly, even though there's a row-per-user in both? What boundary does that keep in place?
+- `workout_sets.workout_id` cascades on delete but `workout_sets.exercise_id` does not. What would go wrong if `exercise_id` also cascaded?
+- What does `supabase db reset` do that applying a single `ALTER TABLE` by hand doesn't, and why is that guarantee valuable before a deploy?
+- Why is `weight_kg` declared `numeric(6,2)` instead of a floating-point type, given you'll later sum it to compute training volume?
+
+## Recap
+
+FitTrack's database is **four tables** — `profiles` (1:1 with Supabase's `auth.users`, the app-owned user record), `exercises` (one catalog for shared and user-created), `workouts` (a logged session), and `workout_sets` (the sets within it) — defined as a single **version-controlled migration**. You created it with `supabase migration new`, wrote the `CREATE TABLE` DDL by hand with `uuid` primary keys, exact `numeric` weights, and cascading foreign keys down the ownership chain, then applied it with `supabase db reset`, which rebuilds the local database deterministically from every migration file. `supabase migration list` and a `psql \dt` confirmed the four tables exist, and a second reset proved the history replays cleanly. The tables are in place but wide open — nothing yet ties a `workouts` row to the user who may read it. Next, [Auth and RLS →](/fittrack/en/supabase/auth-and-rls/) turns on email authentication, auto-creates a `profiles` row for every new user with a database trigger, and locks each table down with row-level security.

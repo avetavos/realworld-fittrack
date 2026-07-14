@@ -1,0 +1,202 @@
+---
+title: Auth and RLS
+description: "เปิด Supabase email auth, auto-create row ใน profiles ให้ user ใหม่ทุกคนด้วย trigger บน auth.users, และล็อกสี่ table ด้วย row-level security เขียนเป็น migration ตัวที่สองเพื่อให้กฎ security อยู่ใน version control เคียงข้าง schema ทำไม profile bootstrap ถึงควรอยู่ใน database trigger และทำไม RLS เป็น defense-in-depth หลัง FastAPI gate ไม่ใช่ access path หลัก ตรวจสอบด้วยการ sign up user ทดสอบกับ local Auth API แล้วดู profile row โผล่ขึ้นมา"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+ชั้น security ครอบสี่ table จาก [Schema and migrations →](/fittrack/th/supabase/schema-and-migrations/): **email authentication**, **`profiles` row อัตโนมัติสำหรับ user ใหม่ทุกคน**, และ policy **row-level security (RLS)** ที่หยุด user คนหนึ่งไม่ให้อ่านข้อมูลของอีกคนตั้งแต่ที่ database เอง
+
+สามชิ้น ในหนึ่ง migration ใหม่บวกการเปลี่ยน config:
+
+1. **เปิด email auth** — เปิด signup ใน config ของ local stack เพื่อให้ user ลงทะเบียนด้วย email และ password ได้
+2. **profile bootstrap** — trigger บน `auth.users` ที่ insert `profiles` row ที่ตรงกันในทันทีที่ Supabase สร้าง user ดังนั้นทุก authenticated user มี profile เสมอโดย application ไม่ต้องจำว่าต้องสร้างมัน
+3. **RLS policies** — เปิด row-level security บนทั้งสี่ table แล้วเขียน policy ที่ scope user แต่ละคนให้เห็นเฉพาะ row ของตัวเอง (บวกกับการอ่าน exercise ที่แชร์กันแบบ public)
+
+พอจบ user จะ sign up ได้ profile โผล่ให้เขาอัตโนมัติ และ table จะปฏิเสธการยื่น workout ของ user คนหนึ่งให้อีกคนแม้ว่าจะมีอะไร bypass API ไป นี่คือบทสุดท้ายของ Supabase Foundation หลังจากนี้ [FastAPI Foundation →](/fittrack/th/fastapi/) เริ่มสร้าง backend ที่กลายเป็น gate หลักหน้าทั้งหมดนี้
+
+## Why
+
+**Auth** คือเหตุผลที่ FitTrack ใช้ Supabase ตั้งแต่แรก — signup, password hashing, การออก token, และ refresh เป็น surface ที่ใหญ่และ security-critical ซึ่งคุณได้มาถูกต้องฟรี ๆ จาก GoTrue (Auth server ที่ `supabase start` รัน) การเปิดมันแบบ local เป็นการเปลี่ยน config บรรทัดเดียว คำถามด้าน design ที่สำคัญคือเกิดอะไรขึ้น *หลัง* user ถูกสร้าง
+
+user ทุกคนต้องมี `profiles` row — มันคือสิ่งที่ทุก `workouts` และ `exercises` row ชี้ไป คุณสร้าง profile นั้นจาก application code ทันทีหลัง signup ได้ แต่มันเปราะ: มันรันเฉพาะเมื่อ signup เกิดผ่าน code path ของคุณ มันล้มเหลวได้อิสระจากการที่ user ถูกสร้าง (ทิ้ง user ไว้แบบไม่มี profile) และมันต้องทำซ้ำในทุก client แทนที่จะเป็นแบบนั้น FitTrack ใช้ **database trigger**: function `handle_new_user()` ที่ fire `after insert on auth.users` แล้ว insert `profiles` row ที่ตรงกันใน transaction เดียวกัน ตอนนี้ invariant "ทุก auth user มี profile" ถูกรับประกันโดย database สำหรับ *ทุก* path ที่สร้าง user — Flutter app, Svelte app, การ invite ใน Studio, admin script ในอนาคต — โดยไม่มี application code ให้ลืม
+
+**RLS** คือ Postgres ที่บังคับ ต่อ row ว่า current user มีสิทธิ์เห็นหรือแก้มันไหม เมื่อเปิด RLS และมี policy อย่าง `using (auth.uid() = user_id)` บน `workouts` query จะ return เฉพาะ row ที่ user ผู้ขอเป็นเจ้าของเท่านั้น — filter อยู่ใน database ไม่ใช่ใน `WHERE` clause ที่โค้ดคุณต้องจำ สังเกตจุดยืนของ FitTrack จาก architecture: **FastAPI backend คือ gate หลัก**; มัน verify JWT และเป็นเจ้าของ business logic RLS ตรงนี้เป็น **defense-in-depth** — กำแพงที่สองเพื่อให้ bug ใน API หรือ client ที่คุยกับ Supabase ตรง ๆ ก็ยัง leak ข้อมูลข้าม user ไม่ได้ เข็มขัด *และ* สายเอี๊ยม เพราะข้อมูลเป็นประวัติ training ส่วนตัวของ user
+
+## Pros & cons
+
+**Bootstrap profile ด้วย database trigger** เทียบกับ **สร้างมันจาก application code หลัง signup**
+
+- **Pros:** invariant "ทุก user มี profile" ยังจริงสำหรับทุก path ที่สร้าง user ไม่ใช่แค่ happy-path signup code ของคุณ; มันรันใน transaction เดียวกับการ insert user ดังนั้นไม่มีช่วงที่ user มีอยู่โดยไม่มี profile; และไม่มี client ต้องจำว่าต้องทำ
+- **Cons:** logic อยู่ใน SQL ภายใน database แทนที่จะเป็นภาษา application ของคุณ มันจึงเป็นที่ที่มือใหม่อาจไม่นึกจะไปหา และมันถูก test ด้วยการ exercise database แทน unit test; function `SECURITY DEFINER` ก็ต้องเขียนอย่างระวัง ความน่าเชื่อถือของ invariant คุ้มกับต้นทุนพวกนั้น
+
+**RLS เป็น defense-in-depth หลัง API** เทียบกับ **พึ่ง FastAPI gate อย่างเดียว**
+
+- **Pros:** bug ใน backend, query ที่ scope ผิด, หรือ client ที่คุยกับ Supabase ตรง ๆ ก็ยังอ่านข้าม user ไม่ได้ เพราะ database เองปฏิเสธ; กฎ ("คุณเห็น row ของตัวเอง") ถูกเขียนครั้งเดียว ข้าง ๆ ข้อมูล และลืมไม่ได้ใน endpoint ใหม่
+- **Cons:** ตอนนี้มีสองที่ที่เขียนกฎ access — authorization ของ API และ RLS policy — ซึ่งต้อง consistent กัน และ RLS เพิ่มต้นทุนเล็กน้อยต่อ query และ debug ยากเวลา query return ค่าว่าง "โดยไม่มีเหตุผล" FitTrack ยอมรับการซ้ำนี้โดยตั้งใจ: สำหรับข้อมูลส่วนตัว กำแพงที่สองที่ซ้ำซ้อนคือ feature
+
+## Set it up
+
+### 1. `supabase/config.toml` — enable email auth
+
+`supabase init` generate `config.toml` มาให้ ตรวจให้แน่ใจว่า email signup เปิดอยู่สำหรับ local stack:
+
+```toml
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+
+[auth.email]
+enable_signup = true
+# For local development, don't require clicking a confirmation link.
+enable_confirmations = false
+```
+
+`enable_confirmations = false` ให้คุณ sign up และใช้ account ได้ทันทีตอน development โดยไม่ต้องวนอีเมลไปมา; hosted project เปิด confirmation ไว้
+
+### 2. Create the security migration
+
+```bash
+supabase migration new add_auth_and_rls
+```
+
+```txt
+Created new migration at supabase/migrations/20260714130000_add_auth_and_rls.sql
+```
+
+### 3. `supabase/migrations/<timestamp>_add_auth_and_rls.sql`
+
+เขียน profile-bootstrap trigger และ RLS policy ลงในไฟล์ใหม่:
+
+```sql
+-- ── Profile bootstrap ────────────────────────────────────────────────
+-- Create a profiles row automatically whenever Supabase creates a user.
+-- SECURITY DEFINER lets the trigger insert into profiles regardless of
+-- who caused the auth.users insert.
+create function handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into profiles (id, display_name)
+  values (new.id, coalesce(new.raw_user_meta_data ->> 'display_name', ''));
+  return new;
+end;
+$$;
+
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function handle_new_user();
+
+-- ── Row-level security ───────────────────────────────────────────────
+alter table profiles     enable row level security;
+alter table exercises    enable row level security;
+alter table workouts     enable row level security;
+alter table workout_sets enable row level security;
+
+-- profiles: a user may read and update only their own row.
+create policy "own profile is readable"
+  on profiles for select using (auth.uid() = id);
+create policy "own profile is updatable"
+  on profiles for update using (auth.uid() = id);
+
+-- exercises: public exercises are readable by anyone; a user fully
+-- manages their own (created_by = them).
+create policy "public exercises are readable"
+  on exercises for select using (is_public or auth.uid() = created_by);
+create policy "own exercises are writable"
+  on exercises for all using (auth.uid() = created_by)
+  with check (auth.uid() = created_by);
+
+-- workouts: a user sees and manages only their own sessions.
+create policy "own workouts"
+  on workouts for all using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- workout_sets: reachable only through a workout the user owns.
+create policy "own workout sets"
+  on workout_sets for all using (
+    exists (
+      select 1 from workouts
+      where workouts.id = workout_sets.workout_id
+        and workouts.user_id = auth.uid()
+    )
+  );
+```
+
+มีสองอย่างที่ต้องอ่านให้ละเอียด `auth.uid()` เป็น function ที่ Supabase ให้มา ซึ่ง return id ของ user ที่ทำ request ปัจจุบัน (จาก JWT ของเขา) — นั่นคือสิ่งที่ทำให้ `using (auth.uid() = user_id)` หมายถึง "row ของคุณเท่านั้น" และ `workout_sets` ไม่มี column `user_id` เป็นของตัวเอง policy ของมันจึงเอื้อมขึ้นไปผ่าน table `workouts` ด้วย subquery `exists`: คุณแตะ set ได้ก็ต่อเมื่อคุณเป็นเจ้าของ workout ที่มันอยู่ใต้
+
+### 4. Apply everything
+
+```bash
+supabase db reset
+```
+
+reset re-run migration *ทั้งสอง* — schema ก่อน แล้วตัวนี้ — ดังนั้น local database ตอนนี้มีสี่ table, trigger, และ RLS ที่เปิดอยู่:
+
+```txt
+Applying migration 20260714120000_create_core_schema.sql...
+Applying migration 20260714130000_add_auth_and_rls.sql...
+Finished supabase db reset on branch main.
+```
+
+## Verify
+
+ก่อนอื่น พิสูจน์ว่า profile bootstrap ทำงานครบวงจรด้วยการ sign up user กับ local Auth API — endpoint เดียวกับที่ client จะใช้:
+
+```bash
+curl -s http://127.0.0.1:54321/auth/v1/signup \
+  -H "apikey: $SUPABASE_ANON_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"lifter@example.com","password":"supersecret"}'
+```
+
+คุณจะได้ user object ที่มี `id` กลับมา ตอนนี้ check ว่า trigger สร้าง `profiles` row ที่ตรงกัน — โดยไม่มี application code รันเลย:
+
+```bash
+psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+  -c "select id, display_name from profiles;"
+```
+
+```txt
+                  id                  │ display_name
+──────────────────────────────────────┼──────────────
+ 6f1c...─...─...─...─...9a2            │
+(1 row)
+```
+
+หนึ่ง row โผล่มาเพราะ user ถูกสร้างล้วน ๆ — นั่นคือ trigger ทำงานของมัน ต่อไป ยืนยันว่า RLS เปิดอยู่จริงและ policy มีอยู่:
+
+```bash
+psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+  -c "select tablename, policyname from pg_policies where schemaname = 'public' order by tablename;"
+```
+
+```txt
+  tablename   │        policyname
+──────────────┼───────────────────────────
+ exercises    │ public exercises are readable
+ exercises    │ own exercises are writable
+ profiles     │ own profile is readable
+ profiles     │ own profile is updatable
+ workout_sets │ own workout sets
+ workouts     │ own workouts
+(6 rows)
+```
+
+สุดท้าย การ check แบบรันจริงสำหรับทั้ง module: `supabase db reset` อีกครั้งแล้วยืนยันว่า migration ทั้งสอง apply โดยไม่มี error การ reset ที่สะอาดหมายถึง schema *และ* กฎ security ของมัน rebuild จากไฟล์ได้เป๊ะ — ซึ่งคือการรับประกันที่ hosted project พึ่งพาตอน deploy
+
+ตรวจสอบความเข้าใจ:
+
+- ทำไม profile ถึงถูกสร้างโดย trigger บน `auth.users` แทนที่จะเป็น application code หลัง signup? บอกหนึ่ง path ที่จะข้ามการสร้างฝั่ง application แต่ไม่ข้าม trigger
+- FitTrack เรียก RLS ว่า "defense-in-depth" ไม่ใช่ access control หลัก อะไร *คือ* gate หลัก และทำไมยังเก็บ RLS ไว้?
+- `workout_sets` ไม่มี `user_id` แต่ policy ของมันยัง scope row ให้ current user ได้ policy ตัดสินยังไงว่า set หนึ่งเป็นของคุณ?
+- `auth.uid()` return อะไร และค่ามาจากไหนบน request จริงจาก client ที่ sign in อยู่?
+
+## Recap
+
+บทนี้ secure สี่ table คุณเปิด **email auth** ใน `config.toml` แล้วเขียน migration ตัวที่สองที่ (1) bootstrap **`profiles` row ผ่าน trigger** บน `auth.users` ดังนั้นทุก user ที่ Supabase สร้างจะได้ profile อัตโนมัติใน transaction เดียวกัน และ (2) เปิด **row-level security** บนทั้งสี่ table ด้วย policy ที่ scope user แต่ละคนให้เห็นเฉพาะ row ของตัวเอง — `auth.uid() = user_id` บน workouts, subquery `exists` ขึ้นไปผ่าน workout ที่เป็นเจ้าของสำหรับ set, และการอ่าน exercise ที่แชร์กันแบบ public การเก็บกฎไว้ใน migration ที่อยู่ใน version control หมายความว่า security rebuild แบบ deterministic ด้วย `supabase db reset` RLS ตรงนี้เป็น **defense-in-depth**: FastAPI backend ที่สร้างต่อไปคือ gate หลัก คุณ verify ทั้งหมดด้วยการ sign up user กับ local Auth API แล้วดู profile row โผล่ขึ้นมา และด้วยการ list policy ที่ active อยู่ นั่นทำให้ Supabase foundation เสร็จ — database มีรูปร่างและมีการ์ด ต่อไป [FastAPI Foundation →](/fittrack/th/fastapi/) ตั้ง Python backend ที่ verify JWT ของ Supabase และเป็นเจ้าของทุกการอ่านและเขียนกับ database นี้
