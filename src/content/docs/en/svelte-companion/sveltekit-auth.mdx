@@ -1,0 +1,251 @@
+---
+title: SvelteKit auth with Supabase
+description: "web/ — a SvelteKit app scaffolded with `sv create`, signing in through Supabase with @supabase/supabase-js. A sign-in page calls signInWithPassword, the browser session is synced to a cookie, hooks.server verifies it into locals, and +layout.server.ts hands the session to every route. Env comes from $env. Verified by signing in and seeing the session on both client and server."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+`web/` — the **Svelte web companion**, the second client in FitTrack and the lighter of the two. Where the Flutter app is the primary, offline-capable client you log workouts from, the web companion is a read-focused dashboard you open on a laptop to glance at recent workouts and progress. It signs in through the **same Supabase Auth** the Flutter app uses and, in the next lesson, reads the **same FastAPI backend**.
+
+This lesson stands up the SvelteKit project and gets authentication working end to end. You scaffold `web/` with the Svelte CLI, add **`@supabase/supabase-js`**, wire the Supabase URL and anon key through **`$env`**, and build a sign-in page that calls `signInWithPassword`. The tricky part for a server-rendered app is making the browser's Supabase session visible on the server — so the `load` functions that call FastAPI can attach the JWT. We solve that by syncing the access token to a cookie, verifying it in **`hooks.server.ts`** into `event.locals`, and exposing it from **`+layout.server.ts`** to every route.
+
+By the end you have a SvelteKit app where a signed-in user's session exists on both the client (for `supabase-js`) and the server (for calling the backend). [The dashboard →](/fittrack/en/svelte-companion/dashboard/) then uses that server-side session to read `GET /workouts` and `GET /progress/*`.
+
+## Why
+
+The Flutter app and this web companion are two front ends over one backend, and they authenticate the same way: a Supabase client SDK signs the user in and holds a JWT, and every backend call carries that JWT for FastAPI to verify. On the web the SDK is `@supabase/supabase-js`, the browser cousin of `supabase_flutter`. Reusing Supabase Auth means there are no second accounts, no second password store, and no auth code in the backend to duplicate — FastAPI already verifies Supabase-issued tokens for the Flutter client, and it verifies these identically.
+
+SvelteKit complicates one thing: it renders on the server. `@supabase/supabase-js` is happiest in the browser, where it persists the session to `localStorage` and refreshes tokens automatically. But the data-loading code that should call FastAPI — SvelteKit `load` functions — runs on the server first, where `localStorage` doesn't exist and the browser's session is invisible. If we only signed in on the client, the server would have no token to forward to the backend.
+
+The fix is to make the session cross the boundary. After a browser sign-in we write the access token into a cookie; **`hooks.server.ts`** runs on every request, reads that cookie, verifies it against Supabase, and stores the result on **`event.locals`**; **`+layout.server.ts`** reads `locals` and returns the session as `load` data so every page and every server `load` can see it. That is the whole session pipeline, and the dashboard lesson plugs straight into it.
+
+And configuration comes through **`$env`**, not `import.meta.env` or `process.env`. SvelteKit's `$env` modules split variables by visibility: `$env/static/public` only exposes names prefixed `PUBLIC_` and is safe to ship to the browser; `$env/static/private` never leaves the server and would refuse to import into client code. The Supabase URL and anon key are public by design (the anon key is meant to be shipped), so they live as `PUBLIC_` vars — and `$env` makes that visibility boundary explicit and enforced at build time.
+
+## Pros & cons
+
+**Reusing Supabase Auth in the web client** vs. **a separate web login against FastAPI**
+
+- **Pros:** one identity system across Flutter and web — same users, same password reset, same JWT format FastAPI already verifies; `supabase-js` handles token refresh and persistence for you; and zero new auth endpoints to write or secure on the backend.
+- **Cons:** you inherit Supabase's session model, including the browser-vs-server mismatch this lesson works around; and you're coupled to Supabase's SDK and token lifecycle rather than owning it. For a companion client that should behave exactly like the primary client, sharing the auth system is clearly worth it.
+
+**Syncing the session to a cookie for the server** vs. **`@supabase/ssr` with full server-side auth**
+
+- **Pros:** the plain `supabase-js` + cookie approach is small and transparent — you can see exactly where the token is set, verified, and forwarded, which is ideal for a lighter, read-focused companion; it keeps `supabase-js` doing what it's good at in the browser and asks the server only to verify a token it's handed.
+- **Cons:** it's a hand-rolled bridge rather than a framework-blessed one — `@supabase/ssr` manages cookies, refresh, and SSR session hydration for you and is the right call for an auth-heavy web app. FitTrack's web side reads more than it writes, so the smaller surface wins here; reach for `@supabase/ssr` when the web client grows real write flows.
+
+## Set it up
+
+### 1. Scaffold `web/` with the Svelte CLI
+
+From the repo root, create the SvelteKit project (this is the modern CLI; `npm create svelte@latest web` still works and drops you into the same prompts):
+
+```bash
+npx sv create web
+```
+
+Choose the **SvelteKit minimal** template, **TypeScript** for type-checking, and add the **prettier** and **eslint** add-ons if you like. Then install and add the Supabase client:
+
+```bash
+cd web
+npm install
+npm install @supabase/supabase-js
+```
+
+### 2. `web/.env`
+
+The web client needs the Supabase project URL and the **anon** (public) key — the same values the Flutter app uses, and the same ones from Module 1. The `PUBLIC_` prefix is what lets `$env/static/public` expose them to the browser:
+
+```bash
+# web/.env — the anon key is public by design; never put the JWT secret here.
+PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
+PUBLIC_SUPABASE_ANON_KEY=your-local-anon-key
+```
+
+### 3. `src/lib/supabase.ts`
+
+A single browser Supabase client the whole app shares. It reads config from `$env/static/public`, so the names are checked at build time:
+
+```ts
+// src/lib/supabase.ts — the browser Supabase client.
+// supabase-js persists the session to localStorage and refreshes tokens
+// on its own; we only ever create one instance and import it everywhere.
+import { createClient } from '@supabase/supabase-js';
+import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY } from '$env/static/public';
+
+export const supabase = createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY);
+```
+
+### 4. `src/routes/signin/+page.svelte`
+
+The sign-in page. It calls `signInWithPassword`, and on success writes the access token to a cookie so the server can see the session, then navigates home. (Svelte 5 runes syntax; drop `$state` for `let` if you're on Svelte 4.)
+
+```svelte
+<!-- src/routes/signin/+page.svelte -->
+<script lang="ts">
+  import { goto, invalidateAll } from '$app/navigation';
+  import { supabase } from '$lib/supabase';
+
+  let email = $state('');
+  let password = $state('');
+  let error = $state<string | null>(null);
+
+  async function signIn(event: SubmitEvent) {
+    event.preventDefault();
+    error = null;
+
+    const { data, session_error } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
+    if (session_error) {
+      error = session_error.message;
+      return;
+    }
+
+    // Bridge the browser session to the server: store the access token in a
+    // cookie so hooks.server.ts can verify it on the next request.
+    const token = data.session?.access_token ?? '';
+    document.cookie = `sb-access-token=${token}; Path=/; SameSite=Lax`;
+
+    await invalidateAll(); // re-run load functions with the new session
+    await goto('/');
+  }
+</script>
+
+<h1>Sign in</h1>
+
+<form onsubmit={signIn}>
+  <label>Email <input type="email" bind:value={email} required /></label>
+  <label>Password <input type="password" bind:value={password} required /></label>
+  <button type="submit">Sign in</button>
+  {#if error}<p role="alert">{error}</p>{/if}
+</form>
+```
+
+### 5. `src/hooks.server.ts`
+
+`hooks.server.ts` runs on every server request. It reads the cookie, asks Supabase to verify the token (a real signature + expiry check, not a blind trust), and puts the resulting session on `event.locals` for the rest of the request:
+
+```ts
+// src/hooks.server.ts — verify the access token once per request into locals.
+import { createClient } from '@supabase/supabase-js';
+import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY } from '$env/static/public';
+import type { Handle } from '@sveltejs/kit';
+
+export const handle: Handle = async ({ event, resolve }) => {
+  const token = event.cookies.get('sb-access-token');
+  event.locals.session = null;
+  event.locals.accessToken = null;
+
+  if (token) {
+    // A per-request server client. getUser(token) verifies the JWT with
+    // Supabase and returns the user only if the token is valid and unexpired.
+    const supabase = createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY);
+    const { data, error } = await supabase.auth.getUser(token);
+    if (!error && data.user) {
+      event.locals.session = { user: data.user };
+      event.locals.accessToken = token; // forwarded to FastAPI in the next lesson
+    }
+  }
+
+  return resolve(event);
+};
+```
+
+Tell TypeScript what we put on `locals` by declaring it in `src/app.d.ts`:
+
+```ts
+// src/app.d.ts
+import type { User } from '@supabase/supabase-js';
+
+declare global {
+  namespace App {
+    interface Locals {
+      session: { user: User } | null;
+      accessToken: string | null;
+    }
+  }
+}
+
+export {};
+```
+
+### 6. `src/routes/+layout.server.ts`
+
+A root `+layout.server.ts` `load` runs on the server for every route and returns the session, so every page and every child `load` receives it. Because it lives in the layout, the whole app shares one source of truth for "who is signed in":
+
+```ts
+// src/routes/+layout.server.ts — expose the verified session to every route.
+import type { LayoutServerLoad } from './$types';
+
+export const load: LayoutServerLoad = ({ locals }) => {
+  return { session: locals.session };
+};
+```
+
+Use it in the root layout to show auth state and a link to the sign-in page:
+
+```svelte
+<!-- src/routes/+layout.svelte -->
+<script lang="ts">
+  let { data, children } = $props();
+</script>
+
+<nav>
+  {#if data.session}
+    <span>Signed in as {data.session.user.email}</span>
+  {:else}
+    <a href="/signin">Sign in</a>
+  {/if}
+</nav>
+
+{@render children()}
+```
+
+## Verify
+
+Make sure your local Supabase is running (from Module 2) and you have a user to sign in as. If you need one, create it with the Supabase CLI:
+
+```bash
+supabase start
+```
+
+Run the SvelteKit dev server:
+
+```bash
+npm run dev
+```
+
+```txt
+  VITE ready in 420 ms
+  ➜  Local:   http://localhost:5173/
+```
+
+Open [http://localhost:5173/signin](http://localhost:5173/signin), enter a valid email and password, and submit. On success you're redirected home and the nav shows **Signed in as …** — proof the browser session exists. Now prove the *server* sees it too: reload the page (a full server round-trip) and the nav still shows your email, because `hooks.server.ts` read the cookie and `+layout.server.ts` returned the session. Confirm the cookie is present in your browser devtools under Application → Cookies:
+
+```txt
+sb-access-token   eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+Finally, run the SvelteKit type/check build to confirm the `$env` names and `locals` types all line up:
+
+```bash
+npm run check
+```
+
+```txt
+svelte-check found 0 errors and 0 warnings
+```
+
+Check your understanding:
+
+- Why can't a SvelteKit `load` function see the session that `supabase-js` stored in the browser, and what does the cookie bridge solve?
+- What does `supabase.auth.getUser(token)` in `hooks.server.ts` actually check, and why is that stronger than just decoding the token's payload?
+- Why do the Supabase URL and anon key come from `$env/static/public` with a `PUBLIC_` prefix, while the JWT secret must never appear in this project at all?
+- After a successful sign-in, why do we call `invalidateAll()` before navigating home instead of just `goto('/')`?
+
+## Recap
+
+`web/` is a SvelteKit app scaffolded with `sv create` and wired to Supabase Auth through `@supabase/supabase-js`. A shared browser client (`src/lib/supabase.ts`) reads `PUBLIC_` config from `$env/static/public`; the `/signin` page calls `signInWithPassword` and syncs the access token to a cookie; `hooks.server.ts` verifies that cookie on every request into `event.locals`; and `+layout.server.ts` hands the resulting session to every route. The session now lives on both sides of the render boundary, and `npm run check` passes clean. Next, [The dashboard →](/fittrack/en/svelte-companion/dashboard/) uses `locals.accessToken` to call the same FastAPI backend — `GET /workouts` and `GET /progress/*` — and renders the user's recent workouts and progress.

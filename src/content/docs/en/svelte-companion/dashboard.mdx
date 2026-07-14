@@ -1,0 +1,207 @@
+---
+title: The dashboard on the same API
+description: "A read-focused SvelteKit dashboard that calls the same FastAPI backend the Flutter app uses. A server load function forwards the Supabase JWT from locals to GET /workouts and GET /progress/records + /progress/volume, then +page.svelte renders recent workouts and progress. Contrasts the read-only web companion with the primary Flutter client. Verified by loading the dashboard and seeing real backend data."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+The dashboard — the one screen this web companion really exists for. It reads the user's **recent workouts** and **progress** from the FastAPI backend and lays them out for a glance on a big screen. No logging, no editing: the Flutter app owns writing, and the web companion owns reading.
+
+Everything hinges on the session pipeline from the [previous lesson](/fittrack/en/svelte-companion/sveltekit-auth/): `hooks.server.ts` already verified the Supabase JWT into `event.locals.accessToken`. Here we write a small backend client that attaches that token as a `Bearer` header, a `+page.server.ts` `load` that calls **`GET /workouts`**, **`GET /progress/records`**, and **`GET /progress/volume`** in parallel, and a `+page.svelte` that renders the results. The backend verifies the token exactly as it does for Flutter, so the web client gets the same data with the same auth and zero new endpoints.
+
+By the end you have a working dashboard reading live data from the shared API, and a clear picture of how a secondary client rides on a backend built for a primary one. This is the last lesson of the module; from here the course moves on to [Testing →](/fittrack/en/testing/).
+
+## Why
+
+The whole point of the FitTrack architecture is that **FastAPI owns the data and both clients call it**. The Flutter app doesn't talk to Postgres directly and neither does this dashboard — they both send HTTP requests with a Supabase JWT, and FastAPI verifies the token and runs the query. So building the web dashboard is not "add a web data layer"; it's "call the endpoints that already exist." `GET /workouts` returns the user's history most-recent-first, `GET /progress/records` returns their best weight per exercise (their PRs), and `GET /progress/volume` returns weekly total volume. Those three calls are the entire dashboard.
+
+The one web-specific decision is **where** the calls happen. In SvelteKit a `+page.server.ts` `load` runs on the server, and that's exactly where we want the backend calls: the JWT lives on `event.locals` (server-side), the FastAPI base URL can stay a server-only secret, and the browser receives finished data instead of making its own authenticated cross-origin requests. It also means the token never has to be handed to client JavaScript to make the fetch — the server holds it, forwards it, and returns only the rendered data. For a read-focused page this is the simplest correct shape: load on the server, render on the client.
+
+Contrast that with the **Flutter primary client**. Flutter is stateful and interactive: it holds a Riverpod store, lets you start a workout and add sets offline-ish, and `POST`s them back — it's where the data is *created*. This web companion is deliberately the opposite: stateless request/response, no local store to speak of, read-only. Same backend, same auth, very different client. Seeing both makes the backend's job obvious — it is the single source of truth that neither client duplicates, and adding a third client would again be "just call the endpoints."
+
+## Pros & cons
+
+**Fetching in `+page.server.ts` (server `load`)** vs. **fetching from the browser in `+page.svelte`**
+
+- **Pros:** the JWT and the FastAPI base URL stay server-side and never ship to the client; the browser gets ready-to-render data with no auth or CORS handling of its own; and SvelteKit can render the dashboard's first paint on the server with the data already present.
+- **Cons:** every dashboard view is a server round-trip rather than a background client fetch, so highly interactive, frequently-refreshing UIs feel snappier fetching from the browser. FitTrack's dashboard is a periodic glance, not a live feed, so server-side loading is the better fit; a real-time view would push some fetches back to the client.
+
+**A read-only web companion** vs. **making the web client a second full read/write app**
+
+- **Pros:** scoping the web client to reads keeps it tiny — no forms, no optimistic updates, no offline write queue — and avoids two clients competing to own the "log a workout" experience, which the Flutter app does better on a phone at the gym.
+- **Cons:** you can't log a workout from your laptop, which some users will want. That's a deliberate YAGNI call for the course: writing is Flutter's job, and the endpoints (`POST /workouts`) are already there if you later decide the web client should write too.
+
+## Set it up
+
+### 1. `web/.env` — the backend URL
+
+The dashboard needs to know where FastAPI is. Because the calls happen in a server `load`, this can be a **server-only** variable (no `PUBLIC_` prefix), read through `$env/static/private` — it never reaches the browser:
+
+```bash
+# web/.env (add to the vars from the previous lesson)
+API_URL=http://127.0.0.1:8000
+```
+
+### 2. `src/lib/server/api.ts`
+
+A tiny server-side helper that calls FastAPI with the Supabase JWT attached. It lives under `lib/server/` — a folder SvelteKit refuses to import into client code, so the token-forwarding logic can never leak to the browser:
+
+```ts
+// src/lib/server/api.ts — call FastAPI with the Supabase JWT as a Bearer token.
+// This is the exact same auth the Flutter client sends; FastAPI verifies it
+// with get_current_user and scopes every query to the token's user.
+import { API_URL } from '$env/static/private';
+
+export async function apiGet<T>(
+  path: string,
+  token: string,
+  fetchFn: typeof fetch
+): Promise<T> {
+  const res = await fetchFn(`${API_URL}${path}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) {
+    throw new Error(`FastAPI ${path} failed: ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+```
+
+### 3. `src/routes/+page.server.ts`
+
+The dashboard's `load`. It redirects to sign-in when there's no session, then fetches workouts and both progress endpoints **in parallel** and returns them. `weeks=8` asks the volume endpoint for the last eight weeks:
+
+```ts
+// src/routes/+page.server.ts — load recent workouts + progress for the dashboard.
+import { redirect } from '@sveltejs/kit';
+import { apiGet } from '$lib/server/api';
+import type { PageServerLoad } from './$types';
+
+type WorkoutSet = { exercise_id: string; set_index: number; reps: number; weight_kg: number };
+type Workout = { id: string; performed_at: string; notes: string | null; sets: WorkoutSet[] };
+type Record = { exercise_id: string; exercise_name: string; best_weight_kg: number };
+type VolumePoint = { week_start: string; volume_kg: number };
+
+export const load: PageServerLoad = async ({ locals, fetch }) => {
+  if (!locals.session || !locals.accessToken) {
+    throw redirect(303, '/signin');
+  }
+  const token = locals.accessToken;
+
+  // Three independent reads — fire them together instead of awaiting in series.
+  const [workouts, records, volume] = await Promise.all([
+    apiGet<Workout[]>('/workouts', token, fetch),
+    apiGet<Record[]>('/progress/records', token, fetch),
+    apiGet<VolumePoint[]>('/progress/volume?weeks=8', token, fetch)
+  ]);
+
+  return {
+    recentWorkouts: workouts.slice(0, 5), // GET /workouts is newest-first
+    records,
+    volume
+  };
+};
+```
+
+### 4. `src/routes/+page.svelte`
+
+The dashboard view — three read-only panels. It renders whatever the `load` returned; there's no client-side fetching or state:
+
+```svelte
+<!-- src/routes/+page.svelte -->
+<script lang="ts">
+  let { data } = $props();
+
+  const fmtDate = (iso: string) =>
+    new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+</script>
+
+<h1>Dashboard</h1>
+
+<section>
+  <h2>Recent workouts</h2>
+  {#if data.recentWorkouts.length === 0}
+    <p>No workouts yet — log one in the FitTrack app.</p>
+  {:else}
+    <ul>
+      {#each data.recentWorkouts as w (w.id)}
+        <li>
+          <strong>{fmtDate(w.performed_at)}</strong> — {w.sets.length} sets
+          {#if w.notes}<em>· {w.notes}</em>{/if}
+        </li>
+      {/each}
+    </ul>
+  {/if}
+</section>
+
+<section>
+  <h2>Personal records</h2>
+  <ul>
+    {#each data.records as r (r.exercise_id)}
+      <li>{r.exercise_name}: <strong>{r.best_weight_kg} kg</strong></li>
+    {/each}
+  </ul>
+</section>
+
+<section>
+  <h2>Weekly volume (last 8 weeks)</h2>
+  <ul>
+    {#each data.volume as v (v.week_start)}
+      <li>{fmtDate(v.week_start)}: {v.volume_kg.toLocaleString()} kg</li>
+    {/each}
+  </ul>
+</section>
+```
+
+## Verify
+
+Have both halves running: the FastAPI backend on `:8000` (`uv run fastapi dev app/main.py` in `api/`) and the SvelteKit dev server. Make sure the signed-in user has at least one logged workout — log one from the Flutter app, or `POST /workouts` directly — so the endpoints return data.
+
+```bash
+npm run dev
+```
+
+Open [http://localhost:5173/](http://localhost:5173/) while signed in. The dashboard renders three panels populated from the backend:
+
+```txt
+Dashboard
+Recent workouts
+  Jul 12 — 5 sets · Upper body
+  Jul 10 — 4 sets
+Personal records
+  Bench press: 80 kg
+  Deadlift: 140 kg
+Weekly volume (last 8 weeks)
+  Jul 07: 4,250 kg
+```
+
+Confirm the request actually reached FastAPI with your token: check the FastAPI dev-server log and you'll see the authenticated calls, and a request with no/invalid token returns 401 — the same gate the Flutter client hits:
+
+```txt
+INFO  127.0.0.1 - "GET /workouts HTTP/1.1" 200 OK
+INFO  127.0.0.1 - "GET /progress/records HTTP/1.1" 200 OK
+INFO  127.0.0.1 - "GET /progress/volume?weeks=8 HTTP/1.1" 200 OK
+```
+
+Then sign out (or clear the `sb-access-token` cookie) and reload: the `load` finds no session and redirects you to `/signin`. Finally, run the type check to confirm the load data and component props line up:
+
+```bash
+npm run check
+```
+
+```txt
+svelte-check found 0 errors and 0 warnings
+```
+
+Check your understanding:
+
+- Why do the backend calls live in `+page.server.ts` rather than in the browser, and what two things stay server-side as a result?
+- The dashboard adds **zero** new backend endpoints. What does that tell you about the role FastAPI plays for the two clients?
+- Why fire the three reads with `Promise.all` instead of `await`-ing them one after another, and when would that *not* help?
+- This companion is read-only while the Flutter app reads and writes. Which client would you reach for to log a workout at the gym, and why is that the right split?
+
+## Recap
+
+The dashboard reads the **same FastAPI backend** the Flutter app uses, authenticated with the **same Supabase JWT**. A server-only helper (`src/lib/server/api.ts`) attaches `locals.accessToken` as a `Bearer` header; `+page.server.ts` redirects unauthenticated visitors, then calls `GET /workouts`, `GET /progress/records`, and `GET /progress/volume?weeks=8` in parallel; and `+page.svelte` renders recent workouts and progress with no client-side state. That contrast is the lesson: the Flutter app is the stateful, offline-friendly, read/write **primary** client, and this is a stateless, read-only **companion** — two very different front ends over one backend that neither of them duplicates. That completes the Svelte Web Companion module. Next, [Testing →](/fittrack/en/testing/) covers pytest for the backend and widget tests for the Flutter client.
