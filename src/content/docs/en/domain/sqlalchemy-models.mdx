@@ -1,0 +1,260 @@
+---
+title: SQLAlchemy models
+description: "app/models/ — a Base(DeclarativeBase) and the four SQLAlchemy 2.0 models (Profile, Exercise, Workout, WorkoutSet) written with Mapped/mapped_column and typed relationships, mirroring the Supabase migration column for column. Why the models restate a schema the database already owns, why annotations alone imply nullability, and how relationship() plus cascade let you build a workout and its sets as one object graph. Verified by importing the metadata and seeing the four table names register."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+`app/models/` — FitTrack's four database tables as Python classes. The Supabase migration already created `profiles`, `exercises`, `workouts`, and `workout_sets` in Postgres; this lesson gives FastAPI a **typed, in-code picture** of those tables so the rest of the backend reads and writes rows as objects instead of hand-written SQL. You build one `Base` and four models — `Profile`, `Exercise`, `Workout`, `WorkoutSet` — using SQLAlchemy 2.0's `Mapped` / `mapped_column` style, and connect them with `relationship()` so a `Workout` carries its `sets` as a list.
+
+These models are the foundation the whole data layer stands on: [Schemas & repositories →](/fittrack/en/domain/schemas-and-repositories/) wraps them in Pydantic schemas and repository classes, and every API module from Exercises onward reads and writes through them over the async session from [Async database →](/fittrack/en/fastapi/async-database/).
+
+## Why
+
+The database already owns the schema — so why restate it in Python? Because the alternative is scattering raw SQL and untyped tuples across every endpoint (exactly what `/me` did as a stopgap). A model gives you three things at once: a **type** (`Workout.notes` is a `str | None`, and your editor and type checker know it), a **query surface** (`select(Workout).where(...)` instead of string SQL), and a place to declare **relationships** so related rows load as connected objects. The model is the single in-code definition of what a row *is*; everything above it — schemas, repositories, routers — builds on that instead of re-deriving it.
+
+SQLAlchemy 2.0's declarative style leans on Python type annotations, which makes the models read almost like the SQL they mirror:
+
+- **`Mapped[str]` vs. `Mapped[str | None]`** — the annotation itself decides nullability. `Mapped[str]` is `NOT NULL`; `Mapped[str | None]` is nullable. You don't repeat `nullable=True`; the type *is* the declaration. So `Workout.notes: Mapped[str | None]` and `Exercise.created_by: Mapped[UUID | None]` are nullable precisely because the migration made those columns nullable.
+- **`mapped_column(...)`** is where anything beyond the type goes: `primary_key=True`, a `ForeignKey`, or a `server_default`. We use **`server_default`** (e.g. `text("gen_random_uuid()")`, `func.now()`) rather than Python-side defaults so the *database* fills these in — matching the migration exactly, and meaning a freshly built object gets its id and timestamps from Postgres, the same values every other client would see.
+- **`relationship()`** declares the links between tables. `Workout.sets` is a `list[WorkoutSet]`; `WorkoutSet.workout` points back. Declaring both ends with `back_populates` keeps them in sync in memory. The `cascade="all, delete-orphan"` on `Workout.sets` means the sets live and die with their workout — appending a `WorkoutSet` to `workout.sets` and saving the workout persists both, and deleting the workout removes its sets. That's what lets the next module create a whole session in one natural piece of code.
+
+Keeping the models **faithful to the migration** is the rule that matters most. The migration is the source of truth for the actual database; if a model disagrees (wrong nullability, a missing default), the ORM will build objects Postgres then rejects. Every column below matches the SQL from the Supabase module one-to-one.
+
+## Pros & cons
+
+**SQLAlchemy 2.0 `Mapped` / `mapped_column`** vs. **the legacy `Column` / `declarative_base()` style**
+
+- **Pros:** columns are ordinary typed attributes, so editors autocomplete them and a type checker catches `workout.reps` (there is no such field) at author time; nullability comes straight from the annotation, so the model reads like a schema; relationships are typed (`Mapped[list[WorkoutSet]]`), so the object graph is legible without running anything.
+- **Cons:** it's the newer API, so a lot of older tutorials and Stack Overflow answers still show `Column(...)` and `Integer`, which don't line up with what you're writing — you have to be deliberate about following 2.0-era material. The payoff in type safety is worth the initial mismatch.
+
+**Modeling relationships with `relationship()` + cascade** vs. **treating every table independently and joining by hand**
+
+- **Pros:** a `Workout` and its `WorkoutSet`s behave as one object graph — build the parent, append children, save once; deletes cascade; reads can eager-load the sets in a single planned query. The domain reads the way you think about it ("a workout has sets"), not as disconnected id-matching.
+- **Cons:** relationships add behavior you must understand to use safely — in async SQLAlchemy, lazy loading isn't available, so you have to eager-load (`selectinload`) related collections explicitly or hit a runtime error. That's a real gotcha, covered head-on when the repositories load workouts next lesson. The clarity of an object graph outweighs having to be explicit about loading.
+
+## Set it up
+
+`app/models/` is a package: a `Base`, one file per model, and an `__init__.py` that imports all four so they register on the same metadata.
+
+### 1. `app/models/base.py`
+
+```python
+# app/models/base.py — the declarative base every model inherits from.
+from sqlalchemy.orm import DeclarativeBase
+
+
+class Base(DeclarativeBase):
+    """Shared metadata registry for all FitTrack models."""
+```
+
+### 2. `app/models/profile.py`
+
+```python
+# app/models/profile.py — 1:1 with a Supabase auth.users row.
+from datetime import datetime
+from typing import TYPE_CHECKING
+from uuid import UUID
+
+from sqlalchemy import DateTime, func, text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base
+
+if TYPE_CHECKING:
+    from app.models.exercise import Exercise
+    from app.models.workout import Workout
+
+
+class Profile(Base):
+    __tablename__ = "profiles"
+
+    # id mirrors auth.users(id); the FK to the auth schema lives in the DB,
+    # not the model, so we just declare it the primary key.
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    display_name: Mapped[str] = mapped_column(default="", server_default=text("''"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    exercises: Mapped[list["Exercise"]] = relationship(back_populates="creator")
+    workouts: Mapped[list["Workout"]] = relationship(back_populates="user")
+```
+
+### 3. `app/models/exercise.py`
+
+```python
+# app/models/exercise.py — shared catalog + user-created exercises.
+from datetime import datetime
+from typing import TYPE_CHECKING
+from uuid import UUID
+
+from sqlalchemy import DateTime, ForeignKey, func, text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base
+
+if TYPE_CHECKING:
+    from app.models.profile import Profile
+
+
+class Exercise(Base):
+    __tablename__ = "exercises"
+
+    id: Mapped[UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    name: Mapped[str]
+    muscle_group: Mapped[str]
+    is_public: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    # Nullable: a null created_by means a global/seeded catalog exercise.
+    created_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    creator: Mapped["Profile | None"] = relationship(back_populates="exercises")
+```
+
+### 4. `app/models/workout.py`
+
+```python
+# app/models/workout.py — one logged training session.
+from datetime import datetime
+from typing import TYPE_CHECKING
+from uuid import UUID
+
+from sqlalchemy import DateTime, ForeignKey, func, text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base
+
+if TYPE_CHECKING:
+    from app.models.profile import Profile
+    from app.models.workout_set import WorkoutSet
+
+
+class Workout(Base):
+    __tablename__ = "workouts"
+
+    id: Mapped[UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
+    performed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    notes: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    user: Mapped["Profile"] = relationship(back_populates="workouts")
+    # The sets belong to this workout: cascade persists and deletes them
+    # with the parent, and they come back ordered by set_index.
+    sets: Mapped[list["WorkoutSet"]] = relationship(
+        back_populates="workout",
+        cascade="all, delete-orphan",
+        order_by="WorkoutSet.set_index",
+    )
+```
+
+### 5. `app/models/workout_set.py`
+
+```python
+# app/models/workout_set.py — one set inside a workout (exercise + reps + weight).
+from datetime import datetime
+from decimal import Decimal
+from typing import TYPE_CHECKING
+from uuid import UUID
+
+from sqlalchemy import DateTime, ForeignKey, Numeric, func, text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base
+
+if TYPE_CHECKING:
+    from app.models.exercise import Exercise
+    from app.models.workout import Workout
+
+
+class WorkoutSet(Base):
+    __tablename__ = "workout_sets"
+
+    id: Mapped[UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    workout_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workouts.id", ondelete="CASCADE")
+    )
+    exercise_id: Mapped[UUID] = mapped_column(ForeignKey("exercises.id"))
+    set_index: Mapped[int]
+    reps: Mapped[int]
+    # numeric(6,2) in the DB → Decimal in Python (never float for weights).
+    weight_kg: Mapped[Decimal] = mapped_column(Numeric(6, 2))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    workout: Mapped["Workout"] = relationship(back_populates="sets")
+    exercise: Mapped["Exercise"] = relationship()
+```
+
+### 6. `app/models/__init__.py`
+
+Import every model here so they all register on `Base.metadata` and relationship strings resolve:
+
+```python
+# app/models/__init__.py — one place to import the whole model set from.
+from app.models.base import Base
+from app.models.exercise import Exercise
+from app.models.profile import Profile
+from app.models.workout import Workout
+from app.models.workout_set import WorkoutSet
+
+__all__ = ["Base", "Profile", "Exercise", "Workout", "WorkoutSet"]
+```
+
+## Verify
+
+The models don't power a new endpoint yet — the check is that they **register correctly**: the classes import without error and produce exactly the four tables the migration created, with the right columns. Run a one-liner through `uv`:
+
+```bash
+uv run python -c "from app.models import Base; print(sorted(Base.metadata.tables))"
+```
+
+```txt
+['exercises', 'profiles', 'workout_sets', 'workouts']
+```
+
+Four names, matching the schema. Now confirm a specific mapping — that `weight_kg` is `NUMERIC(6, 2)` and `notes` is nullable — so you know the models agree with the database, not just that they import:
+
+```bash
+uv run python -c "
+from app.models import Workout, WorkoutSet
+print('weight_kg:', WorkoutSet.__table__.c.weight_kg.type)
+print('notes nullable:', Workout.__table__.c.notes.nullable)
+"
+```
+
+```txt
+weight_kg: NUMERIC(6, 2)
+notes nullable: True
+```
+
+If the import raises, a relationship string usually names a class that `__init__.py` didn't import — every model must be imported there for the registry to resolve `"Workout"`, `"WorkoutSet"`, and friends. A clean run with four tables means the domain's object layer is in place.
+
+Check your understanding:
+
+- The database already defines these tables. What three things does restating them as SQLAlchemy models buy the rest of the backend that raw SQL wouldn't?
+- `Workout.notes` is `Mapped[str | None]` and `Workout.user_id` is `Mapped[UUID]`. How does SQLAlchemy 2.0 decide which columns are nullable, and where would you put a `ForeignKey`?
+- Why do the id and timestamp columns use `server_default` (e.g. `text("gen_random_uuid()")`, `func.now()`) instead of Python-side defaults?
+- `Workout.sets` declares `cascade="all, delete-orphan"`. What does that let you do when creating a workout, and what happens to the sets when the workout is deleted?
+
+## Recap
+
+`app/models/` is FitTrack's typed picture of its four Postgres tables: a `Base(DeclarativeBase)` plus `Profile`, `Exercise`, `Workout`, and `WorkoutSet`, written in SQLAlchemy 2.0's `Mapped` / `mapped_column` style so annotations carry nullability and `mapped_column` carries keys, foreign keys, and server defaults — every column faithful to the Supabase migration. `relationship()` connects them (`Workout.sets` ⇄ `WorkoutSet.workout`, with `cascade="all, delete-orphan"`), so a session and its sets form one object graph you can build and delete as a unit. Importing the metadata showed the four tables registered with the right column types. These models are inert on their own — they need a validated boundary for input and output and a place to put queries. Next, [Schemas & repositories →](/fittrack/en/domain/schemas-and-repositories/) adds the Pydantic v2 schemas and the async `ExerciseRepo` / `WorkoutRepo` that turn these models into the read/write layer every API module calls.

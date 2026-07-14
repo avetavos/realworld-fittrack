@@ -1,0 +1,291 @@
+---
+title: Schemas and repositories
+description: "app/schemas/ and app/repositories/ — Pydantic v2 schemas (ExerciseCreate/Read, WorkoutCreate with a nested SetInput, WorkoutRead) that define and validate the API's edges, plus async ExerciseRepo/WorkoutRepo classes that take an AsyncSession and hold every query in one place. Why input and output get separate schemas, why the server assigns set_index, and why repositories flush but never commit — leaving the transaction to the session dependency. Verified by parsing a workout payload and watching validation reject an empty set list."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+Two layers that sit on top of last lesson's models: **`app/schemas/`** — the Pydantic v2 models that define what data crosses the API boundary — and **`app/repositories/`** — the async classes that own every database query. Schemas validate and shape; repositories read and write. Between them they turn the raw SQLAlchemy models into a clean read/write surface the routers just call.
+
+You'll write `ExerciseCreate` and `ExerciseRead`, a `WorkoutCreate` with a nested `SetInput` list and its matching `WorkoutRead`, then `ExerciseRepo` and `WorkoutRepo` — each taking an `AsyncSession` (from [Async database →](/fittrack/en/fastapi/async-database/)) and exposing methods like `create`, `get`, and `list`. This is the last piece of the domain layer: with it done, [The Exercises API →](/fittrack/en/exercises/) is mostly wiring routes to repository calls.
+
+## Why
+
+The SQLAlchemy model is the *database* shape. It is the wrong thing to accept from a client and the wrong thing to hand back. Accepting a raw model as input would let a caller set `id`, `created_at`, or `created_by` — fields the server owns. Returning one leaks internal structure and lazy-load traps. So FitTrack separates the concern: **Pydantic schemas are the boundary**, and they come in pairs.
+
+- **`ExerciseCreate`** is what a client may *send* — `name`, `muscle_group`, `is_public` — and nothing else. It validates: `name` must be non-empty, lengths are bounded. It has no `id`, no `created_by`; the server sets those.
+- **`ExerciseRead`** is what the API *returns* — the full row including server-owned fields — with `model_config = ConfigDict(from_attributes=True)` so it can be built straight from a SQLAlchemy object.
+
+`WorkoutCreate` shows why nesting matters. A workout is logged as **one payload with its sets inside it** — `{"notes": ..., "sets": [{...}, {...}]}` — because a session and its sets are created together, in one transaction. So `WorkoutCreate` carries a `list[SetInput]`, and Pydantic validates the whole tree in one shot: at least one set, each with a positive `reps` and a `weight_kg` that fits `numeric(6,2)`. Notice `SetInput` has **no `set_index`** — the client sends sets *in order*, and the server assigns the index by position. Ordering is server-owned truth, not something a client should be trusted to number correctly.
+
+**Repositories** answer a different question: where do the queries live? Not in the routers — a router should read like "validate input, do the thing, return output," not carry `select(...).where(...)` noise. A repository is a small class holding one `AsyncSession` and all the queries for one resource. `ExerciseRepo.list_visible(user_id)` encapsulates "public exercises plus this user's own"; `WorkoutRepo.get(id, user_id)` encapsulates "this workout, but only if it's yours, with its sets loaded." The routers call methods; the SQL has exactly one home; tests can exercise a repo without spinning up HTTP.
+
+The rule that keeps writes durable: **each write method commits its own unit of work.** [Async database →](/fittrack/en/fastapi/async-database/)'s `get_session` deliberately does *not* commit — it just yields a clean session and closes it — so a method that writes has to call `commit()` itself, and a read method never does. What makes "create a workout *and* its sets" atomic isn't a shared request-level transaction; it's that the whole object graph is added and committed in a **single `commit()`** inside `create`: SQLAlchemy flushes the parent and its cascaded children together, and that one commit makes all of them durable or none of them. Committing per set, or in two steps, is exactly what would let a half-logged session exist.
+
+## Pros & cons
+
+**Separate input and output schemas (`Create` vs. `Read`)** vs. **one schema for both directions**
+
+- **Pros:** the input schema exposes *only* client-settable fields, so server-owned values (`id`, `created_by`, timestamps) can't be spoofed and don't need stripping; validation rules live exactly where untrusted data enters; the output schema can safely include everything the client should see. The two shapes evolve independently.
+- **Cons:** more classes for what looks like the same entity, and a little repetition between `Create` and `Read`. That duplication is the point — the shapes genuinely differ — but it's real typing, and you resist the temptation to "DRY" them into one permissive model that reintroduces the spoofing risk.
+
+**Repository classes** vs. **queries written inline in the route handlers**
+
+- **Pros:** all SQL for a resource lives in one testable place; routers stay thin and read as intent, not query mechanics; a query used by two endpoints (get-by-id in both "read" and "update") is written once; swapping how something loads touches one file.
+- **Cons:** it's another layer to route through, and for a truly trivial one-query endpoint a repository can feel like ceremony. FitTrack accepts that: consistency (every resource has a repo) is worth more than shaving a class off the simplest routes, and the workout queries are anything but trivial.
+
+## Set it up
+
+### 1. `app/schemas/exercise.py`
+
+```python
+# app/schemas/exercise.py — the API edges for an exercise.
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ExerciseCreate(BaseModel):
+    """What a client may send to create an exercise — nothing server-owned."""
+
+    name: str = Field(min_length=1, max_length=120)
+    muscle_group: str = Field(min_length=1, max_length=60)
+    is_public: bool = False
+
+
+class ExerciseRead(BaseModel):
+    """What the API returns. Built directly from a SQLAlchemy Exercise."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    muscle_group: str
+    is_public: bool
+    created_by: UUID | None
+    created_at: datetime
+```
+
+### 2. `app/schemas/workout.py`
+
+```python
+# app/schemas/workout.py — a workout is created with its sets nested inside.
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class SetInput(BaseModel):
+    """One set in a create payload. No set_index — the server assigns it."""
+
+    exercise_id: UUID
+    reps: int = Field(gt=0)
+    weight_kg: Decimal = Field(ge=0, max_digits=6, decimal_places=2)
+
+
+class WorkoutCreate(BaseModel):
+    """Log a whole session in one payload; at least one set is required."""
+
+    performed_at: datetime | None = None  # defaults to now() server-side
+    notes: str | None = None
+    sets: list[SetInput] = Field(min_length=1)
+
+
+class SetRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    exercise_id: UUID
+    set_index: int
+    reps: int
+    weight_kg: Decimal
+
+
+class WorkoutRead(BaseModel):
+    """A workout with its sets, returned to the client."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    user_id: UUID
+    performed_at: datetime
+    notes: str | None
+    created_at: datetime
+    sets: list[SetRead]
+```
+
+### 3. `app/repositories/exercise.py`
+
+```python
+# app/repositories/exercise.py — every exercise query, one place.
+from uuid import UUID
+
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Exercise
+from app.schemas.exercise import ExerciseCreate
+
+
+class ExerciseRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def list_visible(self, user_id: UUID) -> list[Exercise]:
+        """The public catalog plus the caller's own exercises."""
+        stmt = (
+            select(Exercise)
+            .where(or_(Exercise.is_public.is_(True), Exercise.created_by == user_id))
+            .order_by(Exercise.name)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get(self, exercise_id: UUID) -> Exercise | None:
+        return await self.session.get(Exercise, exercise_id)
+
+    async def create(self, data: ExerciseCreate, user_id: UUID) -> Exercise:
+        exercise = Exercise(
+            name=data.name,
+            muscle_group=data.muscle_group,
+            is_public=data.is_public,
+            created_by=user_id,  # server-owned, never from the client
+        )
+        self.session.add(exercise)
+        await self.session.commit()  # get_session doesn't commit; the write must
+        await self.session.refresh(exercise)
+        return exercise
+```
+
+### 4. `app/repositories/workout.py`
+
+```python
+# app/repositories/workout.py — create a session + its sets, read history.
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.models import Workout, WorkoutSet
+from app.schemas.workout import WorkoutCreate
+
+
+class WorkoutRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(self, data: WorkoutCreate, user_id: UUID) -> Workout:
+        workout = Workout(user_id=user_id, notes=data.notes)
+        if data.performed_at is not None:
+            workout.performed_at = data.performed_at
+
+        # The client sends sets in order; the server numbers them.
+        for index, item in enumerate(data.sets):
+            workout.sets.append(
+                WorkoutSet(
+                    exercise_id=item.exercise_id,
+                    set_index=index,
+                    reps=item.reps,
+                    weight_kg=item.weight_kg,
+                )
+            )
+
+        self.session.add(workout)  # cascade adds the sets too
+        await self.session.commit()  # one commit: parent + all sets, atomically
+        # Re-read with sets eagerly loaded so WorkoutRead can serialize them.
+        return await self.get(workout.id, user_id)
+
+    async def get(self, workout_id: UUID, user_id: UUID) -> Workout | None:
+        """One workout — but only if it belongs to this user."""
+        stmt = (
+            select(Workout)
+            .where(Workout.id == workout_id, Workout.user_id == user_id)
+            .options(selectinload(Workout.sets))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_for_user(self, user_id: UUID) -> list[Workout]:
+        """The caller's history, most recent first, sets loaded."""
+        stmt = (
+            select(Workout)
+            .where(Workout.user_id == user_id)
+            .order_by(Workout.performed_at.desc())
+            .options(selectinload(Workout.sets))
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+```
+
+Two things to notice. The queries filter on `user_id` (`get` and `list_for_user`), so a repository can only ever return the caller's own workouts — the ownership rule from `/me` reappears here as a `where` clause. And every read that touches `workout.sets` uses **`selectinload`**: in async SQLAlchemy there's no lazy loading, so a collection you intend to serialize must be eager-loaded, or accessing it later raises. `selectinload` fetches the sets in a second, planned query.
+
+## Verify
+
+The repositories need the database and the routers to exercise fully — that's the next module. What you *can* check standalone is the schema layer, which is pure validation: it should accept a well-formed workout and **reject** a malformed one. Run a round-trip through `uv`:
+
+```bash
+uv run python -c "
+from app.schemas.workout import WorkoutCreate
+
+good = WorkoutCreate.model_validate({
+    'notes': 'leg day',
+    'sets': [
+        {'exercise_id': '11111111-1111-1111-1111-111111111111', 'reps': 5, 'weight_kg': '100.00'},
+        {'exercise_id': '11111111-1111-1111-1111-111111111111', 'reps': 5, 'weight_kg': '102.50'},
+    ],
+})
+print('parsed', len(good.sets), 'sets; first weight is', type(good.sets[0].weight_kg).__name__)
+"
+```
+
+```txt
+parsed 2 sets; first weight is Decimal
+```
+
+The weight came back as a `Decimal`, not a `float` — exactly what you want for money-and-weight precision. Now prove the guardrails bite: an empty set list and a non-positive `reps` must both be rejected:
+
+```bash
+uv run python -c "
+from pydantic import ValidationError
+from app.schemas.workout import WorkoutCreate
+
+for bad in ({'sets': []}, {'sets': [{'exercise_id': '11111111-1111-1111-1111-111111111111', 'reps': 0, 'weight_kg': '50'}]}):
+    try:
+        WorkoutCreate.model_validate(bad)
+        print('ERROR: accepted invalid payload')
+    except ValidationError as exc:
+        print('rejected:', exc.errors()[0]['msg'])
+"
+```
+
+```txt
+rejected: List should have at least 1 item after validation, not 0
+rejected: Input should be greater than 0
+```
+
+Two rejections, no crash — the schemas enforce the contract before any of this reaches the database. As a final import check that the repositories are wired to the models correctly, confirm they load:
+
+```bash
+uv run python -c "import app.repositories.exercise, app.repositories.workout; print('repos import cleanly')"
+```
+
+```txt
+repos import cleanly
+```
+
+Check your understanding:
+
+- `ExerciseCreate` omits `id`, `created_by`, and `created_at`, while `ExerciseRead` includes them. What would go wrong if you accepted one permissive schema for both directions?
+- `SetInput` has no `set_index`, yet stored sets are numbered. Where does the index come from, and why shouldn't the client provide it?
+- `WorkoutRepo.create` adds the workout and all its sets, then calls a single `session.commit()`. Why one commit rather than committing each set as it's added — and what would a half-logged workout look like if it committed per set?
+- Every read that returns `workout.sets` uses `selectinload`. What breaks if you omit it under an async session, and why?
+
+## Recap
+
+The domain layer is complete. **Pydantic v2 schemas** (`ExerciseCreate`/`ExerciseRead`, `WorkoutCreate` with a nested `SetInput` list, `WorkoutRead`) are the validated boundary — input schemas expose only client-settable fields, output schemas build straight from models via `from_attributes`, and a whole workout-with-sets validates in one pass. **Async repositories** (`ExerciseRepo`, `WorkoutRepo`) take an `AsyncSession` and hold every query in one place: ownership filters keep reads scoped to the caller, `selectinload` eager-loads collections for async, and write methods `commit` their own unit of work — a whole workout-with-sets in a single `commit` — while `get_session` just hands out a session and closes it. We verified the schemas accept good input and reject empty set lists and non-positive reps. That's everything the API needs: models to store, schemas to validate, repositories to query. Next, [The Exercises API →](/fittrack/en/exercises/) turns these pieces into real endpoints — thin routers that authenticate with `get_current_user`, take an `AsyncSession`, and call straight into `ExerciseRepo`.
