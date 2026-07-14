@@ -1,0 +1,335 @@
+---
+title: Testing the FastAPI backend with pytest
+description: "ครอบคลุม FitTrack API ด้วย pytest: uv add --dev pytest pytest-asyncio httpx, httpx.AsyncClient ที่ขับ ASGI app แบบ in-process, Postgres session fixture ที่ rollback หลังทุก test, และ get_current_user dependency override ที่ inject fake user เพื่อให้ test ไม่ต้องใช้ Supabase token จริง จัด test ให้ endpoint exercises และ workouts ตรวจสอบด้วย uv run pytest ที่รันผ่าน"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+test suite จริงสำหรับ FitTrack backend — router `exercises` และ `workouts` ที่คุณสร้างใน [Exercises API →](/fittrack/th/exercises/) และ [Workouts API →](/fittrack/th/workouts/), ทดสอบ end to end ผ่าน FastAPI app ตัวจริง
+
+ทั้ง suite ตั้งอยู่บนสาม fixture ใน `conftest.py`:
+
+- **`httpx.AsyncClient`** ที่ต่อสายเข้ากับ app ด้วย `ASGITransport` เพื่อให้ request รันแบบ in-process โดยไม่ต้องมี server สดหรือ network,
+- **Postgres session fixture** ที่เปิด transaction, ส่งมันให้ app, แล้ว **rollback** เมื่อ test จบ — ทุก test เริ่มจาก database สะอาดตัวเดียวกันและไม่เคย commit row จริง,
+- **`get_current_user` dependency override** ที่ return fake user id คงที่ เพื่อให้ test ข้าม Supabase ทั้งหมดแทนที่จะต้อง mint และ decode JWT
+
+พอมีทั้งสามอยู่แล้ว test เองก็อ่านเหมือน HTTP ล้วน ๆ: `await client.post("/exercises", json=...)`, assert บน status และ body, จบ พอจบบท `uv run pytest` รัน endpoint exercises และ workouts กับ database จริงแล้วกลับมาเขียว
+
+## Why
+
+งานทั้งหมดของ backend คือ HTTP: request เข้ามา, `get_current_user` authenticate มัน, router validate body, repository แตะ Postgres, response ออกไป test ที่เรียกแค่ repository function ข้ามส่วนใหญ่ของนั้นไป ดังนั้น FitTrack test app แบบเดียวกับที่ client ยิงมัน — ผ่าน ASGI app เอง `httpx.AsyncClient` กับ `ASGITransport(app=app)` ส่ง request จริงเข้า FastAPI **ใน process เดียวกัน**, ไม่มี `uvicorn` และไม่มี port ที่เปิดไว้ มันเร็วเท่า unit test แต่ครอบคลุม routing, dependency injection, Pydantic validation, และ serialization ในทีเดียว
+
+database คือที่ที่ async test setup มักพังบ่อย endpoint ของ FitTrack เป็น async จริง (async SQLAlchemy, `asyncpg`) ดังนั้น test ก็เป็น async ด้วย — นั่นคือสิ่งที่ `pytest-asyncio` มีไว้ทำ และแทนที่จะ mock database, test รันกับ **Postgres จริง** (Supabase instance ตัว local เดียวกันจาก [Supabase Foundation →](/fittrack/th/supabase/)) เพราะนั่นเป็นทางเดียวที่จะจับ relationship ที่พัง, cascade ที่หายไป, หรือ aggregate ที่ผิด เพื่อไม่ให้มันกลายเป็นกอง row ที่เหลือค้าง session fixture ห่อทุก test ไว้ใน transaction ที่ **rollback เสมอ** ไม่มีอะไรที่ test เขียนรอดมันไปได้ ดังนั้น test ไม่เคยเห็นข้อมูลของกันและกันและลำดับไม่เคยสำคัญ
+
+ปัญหาสุดท้ายคือ auth ทุก route ที่ป้องกันไว้พึ่ง `get_current_user` ซึ่ง decode Supabase JWT — token จริงหมายถึง Supabase session จริง ซึ่งไม่มีที่ทางใน test คำตอบของ FastAPI คือ `app.dependency_overrides`: สลับ `get_current_user` เป็น function ที่แค่ return fake user id router แยกไม่ออก — มันเรียก dependency แล้วได้ user id — ดังนั้นทุก endpoint ที่ป้องกันไว้เข้าถึงได้โดยไม่ต้องมี token สักตัว การ override **`get_session`** แบบเดียวกันคือสิ่งที่ชี้ app ไปที่ test transaction แทนที่จะเป็นตัวใหม่
+
+## Pros & cons
+
+**In-process `httpx.AsyncClient` (`ASGITransport`)** vs. **spinning up a live `uvicorn` server and hitting it over HTTP**
+
+- **Pros:** ไม่มี port ที่ต้อง bind, ไม่มี server process ที่ต้อง start และ reap, ไม่มี startup race ที่ต้องรอ; request รันใน event loop ของ test เอง ดังนั้นเมื่อ fail คุณจะได้ Python traceback ปกติเข้าไปในโค้ด app ของคุณ; และมันเร็วพอที่จะรันทุกครั้งที่ save
+- **Cons:** มันไม่ได้ทดสอบ network stack จริงหรือ production ASGI server ดังนั้นปัญหาเฉพาะ Uvicorn หรือเฉพาะ proxy จะไม่โผล่ตรงนี้ — นั่นเป็นหน้าที่ของ deploy smoke test ใน [Deployment →](/fittrack/th/deployment/)
+
+**A real-Postgres transaction-rollback fixture** vs. **mocking the database (or using SQLite in-memory)**
+
+- **Pros:** test รันกับ engine ตัวเดียวกับที่ production ใช้ ดังนั้น `numeric`, `uuid`, cascading delete, และ SQL aggregate ทำงานจริงหมด; rollback ทำให้ทุก test แยกจากกันและไม่ทิ้งอะไรไว้; และไม่มี mock ที่จะ drift ออกจาก schema
+- **Cons:** suite ต้องมี Postgres ที่รันอยู่ ดังนั้นมันไม่ใช่ zero-setup และช้ากว่า in-memory fake นิดหน่อย — เป็นราคาที่ยุติธรรมสำหรับการทดสอบ database ที่คุณ ship จริง และ Supabase ตัว local ก็ให้ instance นั้นกับคุณอยู่แล้ว
+
+## Set it up
+
+### 1. `api/` — add the test dependencies
+
+```bash
+uv add --dev pytest pytest-asyncio httpx
+```
+
+`--dev` บันทึกพวกนี้ไว้ใต้ `[dependency-groups] dev` ใน `pyproject.toml` ดังนั้นมันติดตั้งสำหรับ development และ CI แต่ไม่เคย ship ใน production image (`httpx` มีอยู่แล้วแบบ transitive ผ่าน `fastapi[standard]`; การเพิ่มมันชัด ๆ ทำให้ test dependency ตั้งใจไว้)
+
+### 2. `api/pyproject.toml` — configure pytest
+
+เพิ่ม pytest section เพื่อให้ async test รันโดยไม่ต้อง decorate ทุกตัว:
+
+```toml
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+```
+
+`asyncio_mode = "auto"` บอก `pytest-asyncio` ให้ถือว่าทุก `async def test_*` เป็น coroutine test — ไม่ต้องมี `@pytest.mark.asyncio` บนทุก function `testpaths` ทำให้ collection ชี้ไปที่ directory `tests/`
+
+<details>
+<summary>Prefer a separate <code>pytest.ini</code>?</summary>
+
+config เดียวกันใช้ได้เป็น `api/pytest.ini` แบบ standalone — section เป็น `[pytest]` แทน `[tool.pytest.ini_options]`:
+
+```ini
+[pytest]
+asyncio_mode = auto
+testpaths = tests
+```
+
+การเก็บไว้ใน `pyproject.toml` หมายถึงไฟล์น้อยลงหนึ่งไฟล์ ใช้ตัวไหนก็ได้
+</details>
+
+### 3. `api/tests/conftest.py` — the fixtures
+
+นี่คือ test harness ทั้งหมด: engine, session ที่ rollback ต่อ test, dependency override, และ client ทุก test file ได้ fixture พวกนี้ฟรี
+
+```python
+# api/tests/conftest.py
+import os
+from uuid import UUID
+
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.auth import get_current_user
+from app.db import get_session
+from app.main import app
+from app.models import Base, Profile
+
+# A dedicated test database URL, defaulting to the local Supabase Postgres.
+# Point this at a throwaway database in CI so a test run can never touch dev data.
+TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql+asyncpg://postgres:postgres@127.0.0.1:54322/postgres",
+)
+
+# The fake user every test authenticates as. It's a fixed UUID so assertions
+# on `user_id` / `created_by` are predictable.
+FAKE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+@pytest_asyncio.fixture(scope="session")
+async def engine():
+    """One async engine for the whole test session; ensure the schema exists."""
+    engine = create_async_engine(TEST_DATABASE_URL)
+    async with engine.begin() as conn:
+        # Local Supabase already ran the migrations, so the tables exist. This
+        # create_all is a harmless no-op there and makes the suite runnable
+        # against a bare Postgres too.
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def session(engine):
+    """A DB session wrapped in a transaction that is always rolled back.
+
+    Nothing a test writes is committed, so every test starts from the same
+    state and tests can't leak into each other.
+    """
+    connection = await engine.connect()
+    transaction = await connection.begin()
+    Session = async_sessionmaker(bind=connection, expire_on_commit=False)
+
+    async with Session() as session:
+        # The fake user needs a profiles row: workouts.user_id and
+        # user-created exercises.created_by both FK to profiles(id). flush()
+        # (not commit) keeps it inside the transaction we roll back.
+        session.add(Profile(id=FAKE_USER_ID, display_name="Test User"))
+        await session.flush()
+        yield session
+
+    await transaction.rollback()
+    await connection.close()
+
+
+@pytest_asyncio.fixture
+async def client(session):
+    """An AsyncClient bound to the app, with auth and the DB session overridden."""
+
+    async def override_get_session():
+        # Hand the app the *same* transactional session the test uses, so the
+        # request and the test see one consistent, rolled-back transaction.
+        yield session
+
+    # No Supabase token needed: get_current_user just returns the fake user id.
+    app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_current_user] = lambda: FAKE_USER_ID
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
+
+    app.dependency_overrides.clear()
+```
+
+การ override `get_current_user` คือหมัดสำคัญ: เพราะ `app.dependency_overrides[get_current_user]` return `FAKE_USER_ID` ทุก route ที่ทำ `Depends(get_current_user)` จึงได้ id นั้นและไม่เคยแตะ PyJWT หรือ Supabase — กลไก [Auth (Supabase JWT) →](/fittrack/th/auth/) ถูก bypass ใน test โดยตั้งใจ
+
+### 4. `api/tests/test_exercises.py` — the exercises endpoints
+
+จัด input, act ผ่าน client, assert บน response parametrized test คือ "table" — หนึ่ง row ต่อหนึ่ง case, หนึ่ง assertion body
+
+```python
+# api/tests/test_exercises.py
+import pytest
+from httpx import AsyncClient
+
+
+async def test_create_then_get_exercise(client: AsyncClient):
+    # Act: create an exercise.
+    resp = await client.post(
+        "/exercises",
+        json={"name": "Back Squat", "muscle_group": "legs", "is_public": True},
+    )
+    assert resp.status_code == 201
+    created = resp.json()
+    assert created["name"] == "Back Squat"
+    assert created["muscle_group"] == "legs"
+
+    # Assert: it's readable by id.
+    resp = await client.get(f"/exercises/{created['id']}")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == created["id"]
+
+
+async def test_list_returns_public_and_own(client: AsyncClient):
+    # Two exercises the current user created; both should come back in the list.
+    await client.post(
+        "/exercises",
+        json={"name": "Deadlift", "muscle_group": "back", "is_public": True},
+    )
+    await client.post(
+        "/exercises",
+        json={"name": "My Cable Row", "muscle_group": "back", "is_public": False},
+    )
+
+    resp = await client.get("/exercises")
+    assert resp.status_code == 200
+    names = {e["name"] for e in resp.json()}
+    assert {"Deadlift", "My Cable Row"} <= names
+
+
+# The "table": each row is (payload, expected 422 field). Invalid bodies must
+# be rejected by Pydantic validation before they reach the database.
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"muscle_group": "legs"},                       # missing name
+        {"name": "No Group"},                           # missing muscle_group
+        {"name": "", "muscle_group": "legs"},           # empty name
+    ],
+)
+async def test_create_rejects_invalid_body(client: AsyncClient, payload: dict):
+    resp = await client.post("/exercises", json=payload)
+    assert resp.status_code == 422
+```
+
+### 5. `api/tests/test_workouts.py` — logging a session
+
+`POST /workouts` เป็นตัวที่น่าสนใจ: มันเขียน workout **และ** set ของมันใน transaction เดียว test สร้าง exercise ไว้อ้างอิง, log workout พร้อมสอง set, แล้วอ่านประวัติกลับมา
+
+```python
+# api/tests/test_workouts.py
+from httpx import AsyncClient
+
+
+async def _create_exercise(client: AsyncClient) -> str:
+    resp = await client.post(
+        "/exercises",
+        json={"name": "Bench Press", "muscle_group": "chest", "is_public": True},
+    )
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+async def test_log_workout_persists_its_sets(client: AsyncClient):
+    exercise_id = await _create_exercise(client)
+
+    # Act: log one session with two sets, in a single request body.
+    resp = await client.post(
+        "/workouts",
+        json={
+            "notes": "Push day",
+            "sets": [
+                {"exercise_id": exercise_id, "set_index": 0, "reps": 5, "weight_kg": 60.0},
+                {"exercise_id": exercise_id, "set_index": 1, "reps": 5, "weight_kg": 62.5},
+            ],
+        },
+    )
+    assert resp.status_code == 201
+    workout = resp.json()
+    assert workout["notes"] == "Push day"
+    assert len(workout["sets"]) == 2
+    assert workout["sets"][0]["reps"] == 5
+    assert workout["sets"][1]["weight_kg"] == 62.5
+
+
+async def test_history_lists_the_logged_workout(client: AsyncClient):
+    exercise_id = await _create_exercise(client)
+    await client.post(
+        "/workouts",
+        json={
+            "notes": "Leg day",
+            "sets": [
+                {"exercise_id": exercise_id, "set_index": 0, "reps": 8, "weight_kg": 80.0},
+            ],
+        },
+    )
+
+    resp = await client.get("/workouts")
+    assert resp.status_code == 200
+    history = resp.json()
+    assert len(history) == 1
+    assert history[0]["notes"] == "Leg day"
+
+
+async def test_history_is_scoped_to_the_current_user(client: AsyncClient):
+    # A fresh transaction (this test's rollback isolation) means no other
+    # user's workouts exist, and the override authenticates as FAKE_USER_ID,
+    # so history starts empty and only reflects what this user logs.
+    resp = await client.get("/workouts")
+    assert resp.status_code == 200
+    assert resp.json() == []
+```
+
+## Verify
+
+ตรวจให้แน่ใจว่า Supabase Postgres ตัว local รันอยู่ (จาก [Supabase Foundation →](/fittrack/th/supabase/)):
+
+```bash
+supabase status
+```
+
+แล้วรัน suite จาก directory `api/`:
+
+```bash
+uv run pytest -v
+```
+
+```txt
+tests/test_exercises.py::test_create_then_get_exercise PASSED
+tests/test_exercises.py::test_list_returns_public_and_own PASSED
+tests/test_exercises.py::test_create_rejects_invalid_body[payload0] PASSED
+tests/test_exercises.py::test_create_rejects_invalid_body[payload1] PASSED
+tests/test_exercises.py::test_create_rejects_invalid_body[payload2] PASSED
+tests/test_workouts.py::test_log_workout_persists_its_sets PASSED
+tests/test_workouts.py::test_history_lists_the_logged_workout PASSED
+tests/test_workouts.py::test_history_is_scoped_to_the_current_user PASSED
+
+======================== 8 passed in 0.41s ========================
+```
+
+ตอนนี้พิสูจน์ว่า isolation เป็นเรื่องจริง: รันทั้ง suite สองรอบติดกัน
+
+```bash
+uv run pytest -q && uv run pytest -q
+```
+
+ทั้งสองรอบผ่านเหมือนกัน ถ้า test ตัวไหน commit แทนที่จะ rollback รอบที่สองจะเจอ exercise และ workout ที่เหลือค้าง แล้ว assertion บน count จะ fail — รอบที่สองที่เขียวคือหลักฐานว่าทุก transaction ถูก rollback
+
+ตรวจสอบความเข้าใจ:
+
+- ทำไม suite ถึงใช้ `httpx.AsyncClient` กับ `ASGITransport(app=app)` แทนที่จะ start `uvicorn` แล้วเรียกมันผ่าน `http://localhost:8000`? in-process client ยังครอบคลุมอะไรที่ bare repository test จะไม่ครอบคลุม?
+- `session` fixture เรียก `await transaction.rollback()` และไม่เคย commit เลย นั่นทำให้สอง test ที่ต่างก็สร้าง exercise ไม่รบกวนกันได้อย่างไร และทำไมลำดับ test ถึงหมดความสำคัญ?
+- `app.dependency_overrides[get_current_user] = lambda: FAKE_USER_ID` แทนที่อะไร และทำไม test ถึงยิง route ที่ป้องกันด้วย `Depends(get_current_user)` ได้โดยไม่ต้องสร้าง Supabase JWT เลย?
+- `session` fixture insert row `Profile` สำหรับ `FAKE_USER_ID` ด้วย `flush()` ก่อน yield ทำไม row นั้นถึงจำเป็นก่อนที่จะ log workout ได้ และทำไม `flush()` ไม่ใช่ `commit()`?
+
+## Recap
+
+FitTrack backend ตอนนี้มี pytest suite ที่ขับ app ตัวจริง: `uv add --dev pytest pytest-asyncio httpx` นำเครื่องมือเข้ามา, `asyncio_mode = "auto"` ใน `pyproject.toml` ให้ทุก `async def test_*` รันโดยไม่ต้อง decorate, และ `conftest.py` จัดสาม fixture ที่ทุกอย่างตั้งอยู่บนนั้น — `httpx.AsyncClient` บน `ASGITransport`, Postgres `session` ที่ห่อใน transaction ที่ rollback เสมอ, และ `app.dependency_overrides` ที่สลับ `get_current_user` เป็น fake user id และ `get_session` เป็น test transaction บนสิ่งเหล่านั้น arranged และ parametrized test ทดสอบ [Exercises API →](/fittrack/th/exercises/) และ [Workouts API →](/fittrack/th/workouts/) — สร้าง, list, validate, และ log session เต็ม ๆ พร้อม set ของมัน — แล้ว `uv run pytest` กลับมาเขียวสองรอบติดกัน พิสูจน์ว่า isolation ยังยืนอยู่ ต่อไป [Flutter widget tests →](/fittrack/th/testing/flutter-widget-tests/) ทำแบบเดียวกันให้ app: `ProviderContainer` test ของ save path และ widget test ของหน้า logging โดยมี fake `apiProvider` แทน backend จริง

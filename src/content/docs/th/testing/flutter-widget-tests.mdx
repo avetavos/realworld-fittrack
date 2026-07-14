@@ -1,0 +1,177 @@
+---
+title: Testing the Flutter app
+description: "ครอบคลุม FitTrack mobile app ด้วย flutter test: ProviderContainer test ของ LoggingController ที่ override apiProvider ด้วย fake FitTrackApi เพื่อให้ saveWorkout ไม่แตะ network แต่ยัง assert JSON body เป๊ะ ๆ ที่มัน post, และ widget test ที่ pump LogWorkoutScreen ด้วย fake ตัวเดียวกันเพื่อเช็ค guard ตอน save-when-empty ตรวจสอบด้วย flutter test ที่รันผ่าน"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+test สำหรับฝั่ง Flutter ของ FitTrack — logging flow จาก [Flutter — Tracking →](/fittrack/th/flutter-tracking/) — รันด้วย `flutter test`, ไม่มี device และไม่มี backend สด
+
+สอง test ห้อยอยู่บน seam เดียวที่ทำให้ app testable: **`apiProvider`** [Flutter — Foundation →](/fittrack/th/flutter-foundation/) expose backend client เป็น `apiProvider`, Riverpod `Provider<FitTrackApi>`, และไม่มีอะไร construct `FitTrackApi` ตรง ๆ — ทุกอย่างอ่านจาก provider ดังนั้น test **override `apiProvider` ด้วย fake** ได้ แล้วทั้ง app รันกับมันโดยไม่มี HTTP เลย เราเขียน:
+
+- **`LoggingController` test** (`ProviderContainer` ล้วน ๆ) ที่ add set, เรียก `saveWorkout()`, แล้ว assert ว่า fake `FitTrackApi` ได้รับ JSON body เป๊ะ ๆ ที่ [Workouts API →](/fittrack/th/workouts/) คาดหวัง,
+- **widget test** ที่ pump `LogWorkoutScreen` ด้วย fake ตัวเดียวกันแล้วเช็ค UI behavior จริง ๆ — ว่า *Save* ถูก disable จนกว่าจะมีอย่างน้อยหนึ่ง set
+
+ระหว่างสองตัวมันครอบคลุมสองสิ่งที่พังจริง: save path (draft serialize เป็น request ที่ถูกต้องไหม?) และ guard logic ของหน้าจอ ไม่มีตัวไหนต้องใช้ backend จริง ดังนั้น `flutter test` รันในไม่กี่วินาที
+
+## Why
+
+seam `apiProvider` คือสิ่งที่ทำให้เรื่องนี้สะอาด `LoggingController.saveWorkout()` ไม่ได้สร้าง client ของตัวเอง — มันเรียก `ref.read(apiProvider).createWorkout(state.toJson())` เพราะ dependency นั้นมาผ่าน provider, test ห่อทุกอย่างใน `ProviderContainer` (สำหรับ logic) หรือ `ProviderScope` (สำหรับ widget) ด้วย `overrides: [apiProvider.overrideWithValue(fakeApi)]`, แล้ว controller และ screen ได้ fake แทน client จริง — โดย **ไม่ต้องเปลี่ยนโค้ดของมัน** จากนั้น test ตรวจ fake เพื่อดูว่า app สั่งให้มันทำอะไรบ้างเป๊ะ ๆ: "จาก `addSet` เหล่านี้, `saveWorkout` post body นี้"
+
+fake เป็น Dart ล้วนไม่กี่บรรทัด `FitTrackApi` ถูกสร้างมาให้ fake ได้: [the API client →](/fittrack/th/flutter-foundation/api-client/) รับ callback `TokenReader` แทนที่จะ import Supabase ดังนั้น subclass เรียก `super(baseUrl: '', readToken: () => null)` แล้ว override แค่ method เดียวที่ทดสอบได้ ไม่มี Supabase, ไม่มี token, ไม่มี network — test เป็นเรื่องของโค้ด *ของคุณ*: request ที่ draft กลายเป็น และ guard ที่หน้าจอบังคับใช้
+
+การแยก logic ออกจาก widget สำคัญ `ProviderContainer` test ขับ `LoggingController` ตรง ๆ แล้ว assert request byte — contract กับ FastAPI — โดยไม่ต้อง pump widget สักตัว widget test ขับ `LogWorkoutScreen` ตัวจริงแล้ว assert UI behavior เมื่อตัวหนึ่ง fail คุณรู้ทันทีว่า save *logic* หรือ *screen* ที่พัง ไม่ใช่ทั้งคู่พร้อมกัน
+
+## Pros & cons
+
+**Overriding `apiProvider` with a fake `FitTrackApi`** vs. **injecting a mocked `Dio` into the real client**
+
+- **Pros:** การ override คือ wiring จริงของ app — ทุก screen และ controller อ่าน `apiProvider` อยู่แล้ว ดังนั้น test ทดสอบ dependency graph ตัวจริง และ fake เป็น subclass เล็ก ๆ ที่ไม่มี HTTP-mock library ให้ config; มันยัง fail เพราะเหตุผลด้าน transport ไม่ได้ ดังนั้น fail หมายความว่า logic *ของคุณ* ผิด
+- **Cons:** fake แทนที่ทั้ง client ดังนั้น test พวกนี้ไม่เคยทดสอบ Dio wiring ของ `FitTrackApi` เอง (interceptor ที่แนบ token, error mapping) — path นั้นพิสูจน์จริง ๆ ได้แค่ end to end ตอน deploy และโดย [pytest suite →](/fittrack/th/testing/pytest-backend/) ของ backend เองฝั่ง server
+
+**A `ProviderContainer` logic test for `LoggingController`** vs. **only testing the save path through the widget**
+
+- **Pros:** container test assert JSON body เป๊ะ ๆ โดยไม่มี widget tree ให้ pump ดังนั้นมันเร็วและแม่นยำเรื่อง API contract และมันพังเพราะ layout change ที่ไม่เกี่ยวไม่ได้; มันคือเครื่องมือที่ถูกต้องสำหรับ "draft serialize ถูกต้องไหม"
+- **Cons:** มันไม่พิสูจน์ว่า *screen* ต่อสาย tap เข้ากับ `saveWorkout` — ปุ่มที่มี `onPressed` ผิดจะผ่าน logic test แล้วยัง ship แบบพัง ซึ่งเป็นเหตุผลชัด ๆ ว่าทำไม widget test ถึงมีอยู่คู่กัน
+
+## Set it up
+
+### 1. `mobile/` — the test dependency
+
+`flutter_test` และ `flutter_riverpod` อยู่ใน project แล้ว ไม่ต้องใช้ mock library — fake เขียนด้วยมือ:
+
+```bash
+flutter pub get
+```
+
+### 2. `mobile/test/logging_controller_test.dart` — the save path
+
+override `apiProvider` ด้วย fake ที่บันทึก body ที่มันได้รับ แล้วขับ controller และ assert บน request ที่บันทึกไว้
+
+```dart
+// mobile/test/logging_controller_test.dart
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:fittrack/src/features/workouts/api_client.dart'; // FitTrackApi, apiProvider
+import 'package:fittrack/src/features/workouts/logging_controller.dart';
+import 'package:fittrack/src/features/workouts/workout_draft.dart'; // WorkoutDraft, SetInput
+
+// A fake FitTrackApi: no network, just records the last body posted.
+// super(...) is cheap because FitTrackApi takes a TokenReader callback,
+// so it never has to touch Supabase to be constructed.
+class FakeApi extends FitTrackApi {
+  FakeApi() : super(baseUrl: '', readToken: () => null);
+
+  Map<String, dynamic>? lastBody;
+
+  @override
+  Future<Map<String, dynamic>> createWorkout(Map<String, dynamic> body) async {
+    lastBody = body;
+    return {'id': 'w1', 'notes': body['notes'], 'sets': body['sets']};
+  }
+}
+
+void main() {
+  test('saveWorkout posts the draft as the body Workouts API expects', () async {
+    final fake = FakeApi();
+    final container = ProviderContainer(
+      overrides: [apiProvider.overrideWithValue(fake)],
+    );
+    addTearDown(container.dispose);
+
+    final controller = container.read(loggingControllerProvider.notifier);
+
+    // Act: build a one-set draft and save it.
+    controller.addSet(
+      const SetInput(exerciseId: 'e1', reps: 5, weightKg: 60.0),
+    );
+    final id = await controller.saveWorkout();
+
+    // Assert: the exact request the backend reads (snake_case fields).
+    expect(id, 'w1');
+    final sets = fake.lastBody!['sets'] as List<dynamic>;
+    expect(sets, hasLength(1));
+    expect(sets.single['exercise_id'], 'e1');
+    expect(sets.single['reps'], 5);
+    expect(sets.single['weight_kg'], 60.0);
+  });
+}
+```
+
+`fake.lastBody` คือสิ่งที่ทำให้นี่เป็น contract test: มันจับ body ที่ `createWorkout` ได้รับ ดังนั้นคุณ assert บน `exercise_id`, `reps`, และ `weight_kg` — field snake_case ที่ [Workouts API →](/fittrack/th/workouts/) อ่าน สร้างโดย `WorkoutDraft.toJson()`
+
+### 3. `mobile/test/log_workout_screen_test.dart` — the screen's guard
+
+pump `LogWorkoutScreen` ตัวจริงพร้อม override fake เข้าไป แล้ว assert behavior ที่ [Flutter — Tracking →](/fittrack/th/flutter-tracking/) สร้าง: *Save* ถูก disable ขณะ draft ว่าง
+
+```dart
+// mobile/test/log_workout_screen_test.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:fittrack/src/features/workouts/api_client.dart';
+import 'package:fittrack/src/features/workouts/log_workout_screen.dart';
+
+import 'logging_controller_test.dart' show FakeApi; // reuse the fake
+
+void main() {
+  testWidgets('Save is disabled until a set is added', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [apiProvider.overrideWithValue(FakeApi())],
+        child: const MaterialApp(home: LogWorkoutScreen()),
+      ),
+    );
+
+    // The Save button exists but is disabled (onPressed == null) with an
+    // empty draft — the "can't save nothing" guard from the tracking module.
+    final saveButton = tester.widget<ElevatedButton>(
+      find.widgetWithText(ElevatedButton, 'Save'),
+    );
+    expect(saveButton.onPressed, isNull);
+  });
+}
+```
+
+widget test assert guard ตรง ๆ จาก `ElevatedButton` ที่ render มา — `onPressed == null` คือวิธีที่ `LogWorkoutScreen` disable *Save* ขณะ `draft.sets.isEmpty` เป๊ะ ๆ ดังนั้น regression ที่ปล่อยให้ workout ว่างถูก submit ได้จะ fail ตรงนี้
+
+## Verify
+
+รันทั้ง Flutter test suite จาก `mobile/`:
+
+```bash
+cd mobile && flutter test
+```
+
+```txt
+00:02 +2: All tests passed!
+```
+
+test ผ่านสองตัว: `ProviderContainer` ตัวหนึ่งพิสูจน์ว่า `saveWorkout` post JSON เป๊ะ ๆ ตาม contract และ widget อีกตัวพิสูจน์ว่า guard ตอน draft ว่างยังยืนอยู่ — ไม่มีตัวไหนแตะ network หรือ device รันทีละไฟล์ขณะที่กำลังทำ iteration:
+
+```bash
+flutter test test/logging_controller_test.dart
+```
+
+จากนั้นยืนยันว่า app ยัง build ผ่าน:
+
+```bash
+flutter analyze
+```
+
+No issues reported แปลว่า test และ app compile สะอาด
+
+ตรวจสอบความเข้าใจ:
+
+- ทั้งสอง test override `apiProvider` แทนที่จะ mock `Dio` การทดสอบที่ seam ของ *provider* ให้อะไรกับคุณที่การ mock `Dio` ภายในของ client จะไม่ให้ — และผลคือมัน *ไม่* ครอบคลุมอะไร?
+- subclass `FakeApi` construct ด้วย `super(baseUrl: '', readToken: () => null)` ทำไมมันถึงถูก และ design choice อะไรใน `FitTrackApi` ที่ทำให้เป็นไปได้?
+- container test assert `sets.single['weight_kg']` (snake_case) แต่ Dart model ใช้ `weightKg` การแปลงนั้นเกิดที่ไหน และทำไมการ assert body แบบ snake_case ถึงเป็นสิ่งที่ถูกต้องสำหรับ contract test?
+- widget test เช็ค `onPressed == null` แทนที่จะ tap *Save* แล้วเช็คว่าไม่มีอะไรเกิดขึ้น ทำไมการตรวจ state ของปุ่มถึงเป็น assertion ที่ตรงกว่าสำหรับ guard นี้?
+
+## Recap
+
+Flutter test ห้อยอยู่บน seam เดียว — `apiProvider`, `Provider<FitTrackApi>` ที่ทุก controller และ screen อ่าน `ProviderContainer` test override มันด้วย `FakeApi` (`FitTrackApi` subclass เล็ก ๆ ที่ build ถูกเพราะ client รับ callback `TokenReader` แทนที่จะ import Supabase), ขับ `LoggingController.saveWorkout()`, แล้ว assert ว่า body ที่บันทึกไว้พา field snake_case เป๊ะ ๆ — `exercise_id`, `reps`, `weight_kg` — ที่ [Workouts API →](/fittrack/th/workouts/) คาดหวัง widget test pump `LogWorkoutScreen` ตัวจริงด้วย fake ตัวเดียวกันแล้ว assert guard ตอน draft ว่าง (`Save` disable ขณะ `draft.sets.isEmpty`) การแยก logic ออกจาก widget หมายความว่า fail ชี้ไปที่ layer เดียวเป๊ะ ๆ และการ override provider ทำให้ทุก test เร็ว, deterministic, และปลอดจาก Supabase, token, และ HTTP `flutter test` พิสูจน์ว่าเขียวทั้งคู่ นั่นครอบคลุมฝั่ง client แล้ว; backend มี [pytest suite →](/fittrack/th/testing/pytest-backend/) ของตัวเอง ต่อไป [Deployment →](/fittrack/th/deployment/) containerize API, apply migration ไปที่ hosted Supabase, แล้ว ship client ทั้งสอง

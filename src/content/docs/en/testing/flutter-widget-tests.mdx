@@ -1,0 +1,177 @@
+---
+title: Testing the Flutter app
+description: "Cover the FitTrack mobile app with flutter test: a ProviderContainer test of the LoggingController that overrides apiProvider with a fake FitTrackApi so saveWorkout never touches the network but still asserts the exact JSON body it posts, and a widget test that pumps LogWorkoutScreen with the same fake to check the save-when-empty guard. Verified by flutter test going green."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+Tests for the Flutter side of FitTrack — the logging flow from [Flutter — Tracking →](/fittrack/en/flutter-tracking/) — run with `flutter test`, no device and no live backend.
+
+Two tests, hung off the one seam that makes the app testable: **`apiProvider`**. [Flutter — Foundation →](/fittrack/en/flutter-foundation/) exposes the backend client as `apiProvider`, a Riverpod `Provider<FitTrackApi>`, and nothing constructs a `FitTrackApi` directly — everything reads the provider. So a test can **override `apiProvider` with a fake** and the whole app runs against it with no HTTP at all. We write:
+
+- a **`LoggingController` test** (a plain `ProviderContainer`) that adds a set, calls `saveWorkout()`, and asserts the fake `FitTrackApi` was handed the exact JSON body the [Workouts API →](/fittrack/en/workouts/) expects,
+- a **widget test** that pumps `LogWorkoutScreen` with the same fake and checks a real piece of UI behavior — that *Save* is disabled until at least one set exists.
+
+Between them they cover the two things that actually break: the save path (does the draft serialize to the right request?) and the screen's guard logic. Neither needs the real backend, so `flutter test` runs in seconds.
+
+## Why
+
+The `apiProvider` seam is what makes this clean. `LoggingController.saveWorkout()` doesn't build its own client — it calls `ref.read(apiProvider).createWorkout(state.toJson())`. Because that dependency comes through a provider, a test wraps everything in a `ProviderContainer` (for logic) or a `ProviderScope` (for widgets) with `overrides: [apiProvider.overrideWithValue(fakeApi)]`, and the controller and screen get the fake instead of the real client — with **no change to their code**. The test then inspects the fake to see exactly what the app asked it to do: "given these `addSet` calls, `saveWorkout` posted this body."
+
+The fake is a few lines of plain Dart. `FitTrackApi` was built to be faked: [the API client →](/fittrack/en/flutter-foundation/api-client/) takes a `TokenReader` callback rather than importing Supabase, so a subclass can call `super(baseUrl: '', readToken: () => null)` and override just the one method under test. No Supabase, no token, no network — the test is about *your* code: the request the draft turns into and the guard the screen enforces.
+
+Splitting logic from widget matters. The `ProviderContainer` test drives `LoggingController` directly and asserts the request bytes — the contract with FastAPI — without pumping a single widget. The widget test drives the actual `LogWorkoutScreen` and asserts UI behavior. When one fails you know immediately whether the save *logic* or the *screen* broke, not both at once.
+
+## Pros & cons
+
+**Overriding `apiProvider` with a fake `FitTrackApi`** vs. **injecting a mocked `Dio` into the real client**
+
+- **Pros:** the override is the app's real wiring — every screen and controller already reads `apiProvider`, so the test exercises the true dependency graph, and the fake is a tiny subclass with no HTTP-mock library to configure; it also can't fail for a transport reason, so a failure means *your* logic is wrong.
+- **Cons:** the fake replaces the whole client, so these tests never exercise `FitTrackApi`'s own Dio wiring (the interceptor that attaches the token, error mapping) — that path is only really proven end to end at deploy time, and by the backend's own [pytest suite →](/fittrack/en/testing/pytest-backend/) on the server side.
+
+**A `ProviderContainer` logic test for `LoggingController`** vs. **only testing the save path through the widget**
+
+- **Pros:** the container test asserts the exact JSON body with no widget tree to pump, so it's fast and precise about the API contract, and it can't be broken by an unrelated layout change; it's the right tool for "does the draft serialize correctly."
+- **Cons:** it doesn't prove the *screen* wires a tap to `saveWorkout` — a button with the wrong `onPressed` would pass the logic test and still ship broken, which is exactly why the widget test exists alongside it.
+
+## Set it up
+
+### 1. `mobile/` — the test dependency
+
+`flutter_test` and `flutter_riverpod` are already in the project. No mock library is needed — the fake is hand-written:
+
+```bash
+flutter pub get
+```
+
+### 2. `mobile/test/logging_controller_test.dart` — the save path
+
+Override `apiProvider` with a fake that records the body it's given, then drive the controller and assert on the recorded request.
+
+```dart
+// mobile/test/logging_controller_test.dart
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:fittrack/src/features/workouts/api_client.dart'; // FitTrackApi, apiProvider
+import 'package:fittrack/src/features/workouts/logging_controller.dart';
+import 'package:fittrack/src/features/workouts/workout_draft.dart'; // WorkoutDraft, SetInput
+
+// A fake FitTrackApi: no network, just records the last body posted.
+// super(...) is cheap because FitTrackApi takes a TokenReader callback,
+// so it never has to touch Supabase to be constructed.
+class FakeApi extends FitTrackApi {
+  FakeApi() : super(baseUrl: '', readToken: () => null);
+
+  Map<String, dynamic>? lastBody;
+
+  @override
+  Future<Map<String, dynamic>> createWorkout(Map<String, dynamic> body) async {
+    lastBody = body;
+    return {'id': 'w1', 'notes': body['notes'], 'sets': body['sets']};
+  }
+}
+
+void main() {
+  test('saveWorkout posts the draft as the body Workouts API expects', () async {
+    final fake = FakeApi();
+    final container = ProviderContainer(
+      overrides: [apiProvider.overrideWithValue(fake)],
+    );
+    addTearDown(container.dispose);
+
+    final controller = container.read(loggingControllerProvider.notifier);
+
+    // Act: build a one-set draft and save it.
+    controller.addSet(
+      const SetInput(exerciseId: 'e1', reps: 5, weightKg: 60.0),
+    );
+    final id = await controller.saveWorkout();
+
+    // Assert: the exact request the backend reads (snake_case fields).
+    expect(id, 'w1');
+    final sets = fake.lastBody!['sets'] as List<dynamic>;
+    expect(sets, hasLength(1));
+    expect(sets.single['exercise_id'], 'e1');
+    expect(sets.single['reps'], 5);
+    expect(sets.single['weight_kg'], 60.0);
+  });
+}
+```
+
+`fake.lastBody` is what makes this a contract test: it captures the body `createWorkout` received, so you assert on `exercise_id`, `reps`, and `weight_kg` — the snake_case fields the [Workouts API →](/fittrack/en/workouts/) reads, produced by `WorkoutDraft.toJson()`.
+
+### 3. `mobile/test/log_workout_screen_test.dart` — the screen's guard
+
+Pump the real `LogWorkoutScreen` with the fake overridden in, and assert the behavior [Flutter — Tracking →](/fittrack/en/flutter-tracking/) built: *Save* is disabled while the draft is empty.
+
+```dart
+// mobile/test/log_workout_screen_test.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:fittrack/src/features/workouts/api_client.dart';
+import 'package:fittrack/src/features/workouts/log_workout_screen.dart';
+
+import 'logging_controller_test.dart' show FakeApi; // reuse the fake
+
+void main() {
+  testWidgets('Save is disabled until a set is added', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [apiProvider.overrideWithValue(FakeApi())],
+        child: const MaterialApp(home: LogWorkoutScreen()),
+      ),
+    );
+
+    // The Save button exists but is disabled (onPressed == null) with an
+    // empty draft — the "can't save nothing" guard from the tracking module.
+    final saveButton = tester.widget<ElevatedButton>(
+      find.widgetWithText(ElevatedButton, 'Save'),
+    );
+    expect(saveButton.onPressed, isNull);
+  });
+}
+```
+
+The widget test asserts the guard directly off the rendered `ElevatedButton` — `onPressed == null` is exactly how `LogWorkoutScreen` disables *Save* while `draft.sets.isEmpty`, so a regression that let an empty workout be submitted fails here.
+
+## Verify
+
+Run the whole Flutter test suite from `mobile/`:
+
+```bash
+cd mobile && flutter test
+```
+
+```txt
+00:02 +2: All tests passed!
+```
+
+Two passing tests: the `ProviderContainer` one proved `saveWorkout` posts the contract's exact JSON, and the widget one proved the empty-draft guard holds — neither touched a network or a device. Run one file at a time while iterating:
+
+```bash
+flutter test test/logging_controller_test.dart
+```
+
+Then confirm the app still builds:
+
+```bash
+flutter analyze
+```
+
+No issues reported means the tests and app compile cleanly.
+
+Check your understanding:
+
+- Both tests override `apiProvider` rather than mocking `Dio`. What does testing at the *provider* seam give you that mocking the client's internal `Dio` would not — and what does it consequently *not* cover?
+- The `FakeApi` subclass constructs with `super(baseUrl: '', readToken: () => null)`. Why is that cheap, and what design choice in `FitTrackApi` made it possible?
+- The container test asserts `sets.single['weight_kg']` (snake_case), but the Dart model uses `weightKg`. Where does that translation happen, and why is asserting the snake_case body the right thing for a contract test?
+- The widget test checks `onPressed == null` instead of tapping *Save* and checking nothing happened. Why is inspecting the button's state a more direct assertion of the guard?
+
+## Recap
+
+The Flutter tests hang off one seam — `apiProvider`, the `Provider<FitTrackApi>` every controller and screen reads. A `ProviderContainer` test overrides it with a `FakeApi` (a tiny `FitTrackApi` subclass, cheap to build because the client takes a `TokenReader` callback instead of importing Supabase), drives `LoggingController.saveWorkout()`, and asserts the recorded body carries the exact snake_case fields — `exercise_id`, `reps`, `weight_kg` — the [Workouts API →](/fittrack/en/workouts/) expects. A widget test pumps the real `LogWorkoutScreen` with the same fake and asserts the empty-draft guard (`Save` disabled while `draft.sets.isEmpty`). Splitting logic from widget means a failure points at exactly one layer, and overriding the provider keeps every test fast, deterministic, and free of Supabase, tokens, and HTTP. `flutter test` proves both green. That's the client covered; the backend has its own [pytest suite →](/fittrack/en/testing/pytest-backend/). Next, [Deployment →](/fittrack/en/deployment/) containerizes the API, applies the migrations to hosted Supabase, and ships both clients.
