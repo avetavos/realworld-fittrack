@@ -1,0 +1,185 @@
+---
+title: Containerize the API
+description: "multi-stage Dockerfile สำหรับ backend api/ ที่ใช้ uv/FastAPI: builder stage ที่รัน uv sync --frozen บน uv image ตัวทางการ, runtime stage แบบ slim ที่รัน uvicorn app.main:app บน 0.0.0.0:8000, และ .dockerignore ที่ทำให้ image เล็กลง ตรวจสอบด้วย docker build, docker run, และ curl ไป /health ที่ได้ {\"status\":\"ok\"}"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+Production image สำหรับ `api/` — FastAPI backend ที่ทั้ง FitTrack เรียกใช้มาตั้งแต่ [The Python toolchain →](/fittrack/th/setup/python-toolchain/) ที่ผ่านมาคุณรันมันด้วย `uv run fastapi dev` ซึ่งเป็น development server ที่มี hot reload แต่ถ้าจะ deploy ที่ไหนก็ตาม — Fly.io, Render, VM ธรรมดา — คุณต้องการ artifact เดียวที่ reproducible ได้ ซึ่งพก Python ของตัวเอง, dependency ที่ล็อกไว้ของตัวเอง มาครบไม่มีอะไรเกิน artifact ตัวนั้นคือ Docker image
+
+คุณจะเขียน **multi-stage Dockerfile**: *builder* stage ที่ใช้ `uv` image ตัวทางการติดตั้ง dependency ที่ล็อกไว้แบบเป๊ะ ๆ ลง virtualenv, และ *runtime* stage ที่สร้างบน slim Python base ซึ่ง copy เฉพาะ virtualenv นั้นกับ package `app/` ของคุณ แล้วเริ่มแอปด้วย `uvicorn app.main:app --host 0.0.0.0 --port 8000` ส่วน `.dockerignore` กัน `.venv`, cache, และ secrets ในเครื่องไม่ให้เข้ามาใน build ตอนจบคุณจะ `docker build` image, `docker run` มัน, แล้วยิง `/health` จาก host — ได้ `{"status":"ok"}` ตัวเดิมที่คุณเห็นใน Module 1 แต่ตอนนี้มาจากใน container บทถัดไป [Hosted Supabase & the clients →](/fittrack/th/deployment/hosted-supabase-and-clients/) จะพา image ตัวนี้ขึ้น host จริงแล้วชี้มันไปที่ database แบบ hosted
+
+## Why
+
+Container image คือหน่วย deploy ที่คนทั้งวงการตกลงกันแล้ว แทนที่จะขอให้ host "ติดตั้ง Python 3.12, แล้ว uv, แล้วรัน `uv sync`" คุณส่ง image ตัวเดียวที่ immutable ให้มันแล้วมันก็รัน image นั้น วิธีนี้กำจัดปัญหาทั้งกลุ่ม "รันได้บนเครื่องผมนะ" ออกไป: เวอร์ชัน interpreter, OS libraries, และทุก dependency ลงลึกถึง patch ถูก bake เข้าไปและเหมือนกันทุกที่ที่ image รัน
+
+**Multi-stage** สำคัญเพราะเครื่องมือที่ต้องใช้ตอน *build* แอปไม่ใช่เครื่องมือที่ต้องใช้ตอน *run* builder stage มี `uv`, toolchain เต็ม, และ source tree ของคุณ ส่วน runtime stage ต้องการแค่ `.venv` ที่ได้กับ package `app/` ด้วยการ copy เฉพาะ virtualenv ข้ามขอบ stage image สุดท้ายจึงไม่เคยพก `uv`, build cache, หรืออะไรอื่นเลย — มันเล็กกว่า, มีของให้โจมตีน้อยกว่า, และเริ่มเร็วกว่า
+
+เราพึ่ง `uv` ใน builder ด้วยเหตุผลเดียวกับที่เราเลือกมันใน Module 1: `uv sync --frozen` ติดตั้งของที่ pin ไว้ใน `uv.lock` แบบเป๊ะ ๆ และ **fail** ถ้า lockfile กับ `pyproject.toml` drift ออกจากกัน นั่นคือคุณสมบัติที่คุณต้องการใน CI และใน build — image resolve dependency เวอร์ชันใหม่กว่าที่ยังไม่ได้ทดสอบโดยบังเอิญไม่ได้ flag `--frozen` เปลี่ยน "reproducible ในทางทฤษฎี" ให้เป็น "reproducible หรือไม่ก็ build error ไปเลย"
+
+และสังเกตว่าอะไรรันแอป: ไม่ใช่ `fastapi dev` แต่เป็น **`uvicorn app.main:app`** ตรง ๆ `fastapi dev` คือความสะดวกตอน develop ที่มี reload กับ log สวย ๆ ส่วน production ต้องการ ASGI server ที่เรียกแบบตรงไปตรงมา bind ไปที่ `0.0.0.0` (ทุก interface เพื่อให้ traffic จากนอก container เข้าถึงได้) บน port ที่รู้แน่นอน `fastapi[standard]` ดึง Uvicorn เข้ามาตั้งแต่ Module 1 แล้ว มันจึงนั่งรออยู่ใน venv พร้อมใช้ — ไม่ต้องเพิ่ม dependency
+
+## Pros & cons
+
+**The official `uv` image** vs. **`pip install uv` onto a plain Python base**
+
+- **Pros:** `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` พก `uv` ที่รู้ว่าใช้ได้กับ Python ที่เข้าคู่กันมาประกอบไว้เรียบร้อย builder stage จึงเริ่มติดตั้งได้ทันทีไม่ต้องมีขั้น bootstrap เวอร์ชันของ `uv` ถูก pin ด้วย tag ซึ่งทำให้ build reproducible
+- **Cons:** คุณต้องพึ่ง image registry ของ Astral และการ tag ของมัน ที่ทำงานซึ่งต้อง build จาก internal base image ที่อนุมัติแล้วสามารถเริ่มจาก base นั้นแล้ว `pip install uv` แทน (หรือ copy binary `uv` เข้ามาด้วย `COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv`) — เพิ่มอีก layer เดียว ผลลัพธ์เหมือนกัน
+
+**A multi-stage build** vs. **a single-stage image that just runs `uv sync` and starts the server**
+
+- **Pros:** runtime image มีแค่ Python, venv ของคุณ, และ `app/` — ไม่มี `uv`, ไม่มี build cache, ไม่มี source tarball — มันจึงเล็กกว่าอย่างเห็นได้ชัดและมี attack surface น้อยกว่า การแยก build/run ยัง cache การติดตั้ง dependency แยกจากโค้ดของคุณ การแก้ `app/` จึงไม่ทำให้ต้องติดตั้ง dependency ใหม่
+- **Cons:** Dockerfile ยาวกว่าและมี concept (stages, `COPY --from`) ที่มือใหม่ต้องเรียนรู้ สำหรับ prototype ใช้แล้วทิ้ง single stage เขียนน้อยบรรทัดกว่า แต่สำหรับอะไรที่คุณ deploy จริง ขนาดและความชัดเจนคุ้มกว่า
+
+## Set it up
+
+ทุกอย่างตรงนี้อยู่ใน `api/` ข้าง ๆ `pyproject.toml` กับ `uv.lock` จาก Module 1
+
+### 1. `api/Dockerfile`
+
+```dockerfile
+# api/Dockerfile — multi-stage build for the FitTrack FastAPI backend.
+
+# --- Builder stage -------------------------------------------------------
+# The official uv image ships uv + a matching Python 3.12. We use it only
+# to resolve and install the locked dependencies into a project venv.
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+
+# Compile .pyc ahead of time (faster cold starts) and copy packages into
+# the venv rather than symlinking to uv's cache (the cache won't exist in
+# the runtime stage).
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+WORKDIR /app
+
+# Install dependencies first, in their own layer, using ONLY the manifest
+# and lockfile. This layer is cached and reused whenever app/ changes but
+# the dependencies don't. --no-install-project skips installing our own
+# package here; --no-dev leaves out test/dev-only deps.
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
+
+# Now bring in the source and install the project itself into the venv.
+COPY . .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+# --- Runtime stage -------------------------------------------------------
+# A clean, slim Python with no build tools. We copy the finished venv and
+# the app package across, and nothing else.
+FROM python:3.12-slim-bookworm
+
+WORKDIR /app
+
+# Copy the virtualenv and the application from the builder stage.
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/app /app/app
+
+# Put the venv's bin on PATH so `uvicorn` resolves to the installed one.
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Run as a non-root user — never run a network service as root.
+RUN useradd --create-home appuser
+USER appuser
+
+# Documents the port the app listens on (0.0.0.0:8000 below).
+EXPOSE 8000
+
+# Production start command: the ASGI server invoked directly, bound to all
+# interfaces so traffic reaching the container is served. No --reload.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+`uv sync` สองขั้นคือ trick สำคัญ: sync แรกติดตั้งเฉพาะ third-party dependency (จาก `pyproject.toml` + `uv.lock`) Docker จึง cache layer นั้นและ reuse มันในทุก build ที่ dependency ไม่เปลี่ยน มีแค่ sync ที่สองซึ่งราคาถูกที่รันใหม่ตอนคุณแก้ `app/` `--no-dev` ตัด tooling อย่าง pytest/httpx จาก [pytest backend →](/fittrack/th/testing/pytest-backend/) ออก — พวกนั้นควรอยู่ใน CI ไม่ใช่ใน image ที่ ship
+
+### 2. `api/.dockerignore`
+
+```txt
+# api/.dockerignore — keep the build context small and secrets out of it.
+# Docker copies the whole context to the daemon; anything matched here is
+# never sent, so it can't leak into an image layer.
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Never bake local secrets into an image. Env comes from the host at run
+# time (see the next lesson).
+.env
+.env.*
+
+# Git and editor cruft.
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+```
+
+การ ignore `.venv/` ไม่ใช่ทางเลือก ถ้าไม่ทำ Docker จะ copy virtualenv ของ *host* เข้ามาใน build context แล้ว builder อาจ layer มันทับตัวที่เพิ่งสร้าง — ช้าและ platform ไม่ตรงกันจนยุ่งเหยิง บรรทัด `.env` คือเรื่อง security: `DATABASE_URL` และ `SUPABASE_JWT_SECRET` ของคุณ (จาก env vars ใน Module 1) ต้องมาถึงตอน run time จาก host เท่านั้น ห้าม freeze เข้าไปใน image ที่อาจถูก push ขึ้น registry
+
+## Verify
+
+Build image จากใน `api/`:
+
+```bash
+cd api
+docker build -t fittrack-api .
+```
+
+```txt
+ => [builder 4/6] RUN uv sync --frozen --no-install-project --no-dev   ...
+ => [builder 6/6] RUN uv sync --frozen --no-dev                        ...
+ => [stage-1 3/5] COPY --from=builder /app/.venv /app/.venv            ...
+ => exporting to image
+ => => naming to docker.io/library/fittrack-api
+```
+
+ทีนี้รันมัน แอปไม่ต้องใช้ database แค่จะตอบ `/health` จึงยังไม่ต้องมี env — map container port 8000 ไป host 8000:
+
+```bash
+docker run --rm -p 8000:8000 fittrack-api
+```
+
+```txt
+INFO:     Started server process [1]
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Application startup complete.
+```
+
+ในอีก terminal ยิง health endpoint บน host — นี่พิสูจน์ว่า traffic ข้ามขอบ container และแอปทำงานอยู่:
+
+```bash
+curl -s localhost:8000/health
+```
+
+```json
+{"status":"ok"}
+```
+
+`{"status":"ok"}` ตัวเดิมจาก Module 1 ตอนนี้เสิร์ฟโดย Uvicorn ใน image ที่ครบในตัว ไม่มี uv, ไม่มี source checkout, และไม่ใช้ Python ในเครื่องเลย หยุด container ด้วย `Ctrl-C`
+
+เป็นการตรวจสุดท้าย ยืนยันว่า multi-stage build คุ้มค่าจริง — runtime image ควรเป็น slim Python บวก venv ของคุณ ไม่ใช่ uv toolchain เต็ม:
+
+```bash
+docker images fittrack-api --format '{{.Size}}'
+```
+
+หลักร้อยเมกะไบต์ถือว่าปกติ ถ้าคุณเห็น builder tooling อยู่ในนั้น แปลว่าคุณ copy อะไรมากกว่า venv กับ `app/` ข้ามขอบ stage มา
+
+ตรวจสอบความเข้าใจ:
+
+- ทำไม runtime stage ถึงเริ่มจาก `python:3.12-slim-bookworm` แทน `uv` image ที่ builder ใช้ อะไรที่ตั้งใจ *ไม่* ให้อยู่ใน image สุดท้าย?
+- `uv sync --frozen` ทำอะไรที่ `uv sync` เปล่า ๆ ไม่ทำ และทำไมนั่นคือพฤติกรรมที่คุณต้องการใน build มากกว่าบนเครื่อง laptop?
+- Dockerfile copy `pyproject.toml` กับ `uv.lock` แล้วรัน sync *ก่อน* copy `app/` การเรียงลำดับแบบนี้ให้อะไรกับคุณตอน rebuild?
+- ทำไม `.env` ต้องอยู่ใน `.dockerignore` และ `DATABASE_URL` กับ `SUPABASE_JWT_SECRET` มาจากไหนแทนเมื่อ container รันอยู่?
+
+## Recap
+
+ตอนนี้ `api/` build เป็น image ที่ deploy ได้ **multi-stage Dockerfile** ใช้ `uv` image ตัวทางการ `uv sync --frozen --no-dev` dependency ที่ล็อกไว้ลง venv แล้ว **slim `python:3.12` runtime stage** copy เฉพาะ venv นั้นกับ package `app/` และเริ่ม server ด้วย `uvicorn app.main:app --host 0.0.0.0 --port 8000` — ไม่มี `fastapi dev`, ไม่มี reload, ไม่มี build tools ที่ ship มา `.dockerignore` กัน `.venv` ในเครื่องและที่สำคัญกว่าคือ secrets ใน `.env` ไม่ให้เข้ามาใน build context `docker build` สร้าง image, `docker run` เสิร์ฟมัน, และ `curl /health` คืน `{"status":"ok"}` จากใน container ต่อไป [Hosted Supabase & the clients →](/fittrack/th/deployment/hosted-supabase-and-clients/) จะเชื่อม Supabase project แบบ hosted, push migration ขึ้นไป, ป้อน production `DATABASE_URL` กับ JWT secret ให้ image ตัวนี้, deploy มันขึ้น host จริง, แล้ว ship client ทั้ง Flutter และ Svelte ให้ยิงมาที่มัน

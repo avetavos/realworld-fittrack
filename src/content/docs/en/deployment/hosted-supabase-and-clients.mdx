@@ -1,0 +1,211 @@
+---
+title: Hosted Supabase & the clients
+description: "Take FitTrack to production: link the hosted Supabase project and supabase db push your migrations to it, feed the API the hosted DATABASE_URL and JWT secret, deploy the container to Fly.io with a fly.toml, then ship a Flutter release build and deploy the SvelteKit companion with the Node adapter. Verified end to end against the deployed /health and a real sign-in. Links forward to the wrap-up."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+The last technical step: everything that has run on your laptop now runs in the cloud. In [Containerize the API →](/fittrack/en/deployment/containerize-the-api/) you turned `api/` into a deployable image. Here you point it at a **hosted Supabase project** instead of the local stack, deploy the image to a real host, and ship both clients against that public backend.
+
+Four moves, in order:
+
+1. **Link the hosted Supabase project** and `supabase db push` — apply the migrations you wrote in [Schema & migrations →](/fittrack/en/supabase/schema-and-migrations/) and [Auth & RLS →](/fittrack/en/supabase/auth-and-rls/) to the production database.
+2. **Deploy the API container** to Fly.io, giving it the hosted `DATABASE_URL` and `SUPABASE_JWT_SECRET` as secrets.
+3. **Ship the Flutter app** as a release build pointed at the deployed API.
+4. **Deploy the SvelteKit companion** with the Node adapter, same public API.
+
+By the end, `curl https://fittrack-api.fly.dev/health` answers from the cloud, and a sign-in on either client flows through hosted Supabase Auth into your deployed FastAPI into hosted Postgres — the exact architecture from the [introduction →](/fittrack/en/introduction/architecture/), now live. This is the final build module; [the wrap-up →](/fittrack/en/wrap-up/) reflects on what you made.
+
+## Why
+
+The whole point of the [FastAPI-as-the-gate architecture](/fittrack/en/introduction/architecture/) is that **only the deployment target changes** at this step, not the shape of the system. Local development ran the same FastAPI against a local Supabase started by the CLI; production runs the same FastAPI against a hosted Supabase. The code is identical — what differs is three environment values (`DATABASE_URL`, `SUPABASE_JWT_SECRET`, `SUPABASE_URL`) that you never hardcoded precisely so this day would be a config change, not a rewrite.
+
+Migrations are why the database can be recreated in the cloud with confidence. You didn't click tables into existence in the Supabase dashboard; you wrote SQL migration files. `supabase db push` replays those same files against the hosted project, so production's schema is the schema you tested locally — and the next schema change is another migration file, not a manual edit someone forgets to reproduce. That's the local-first discipline from Module 2 paying off.
+
+**Secrets stay out of the image.** The `.dockerignore` in the previous lesson deliberately excluded `.env`; here you see the other half of that decision. The hosted `DATABASE_URL` and JWT secret are injected by the host at run time (`fly secrets set`), so the same image runs in any environment and no credential is ever baked into a layer that could be pushed to a registry.
+
+And the two clients ship differently for a real reason: **Flutter compiles to native binaries** you distribute through app stores (or a release build for direct install), while the **SvelteKit companion is a web app** you serve from a Node process behind a URL. Same backend, two distribution channels — the tradeoff you signed up for by [supporting a mobile-primary app and a web companion](/fittrack/en/introduction/architecture/).
+
+## Pros & cons
+
+**Fly.io for the API** vs. **Render (or another PaaS)**
+
+- **Pros of Fly.io:** it deploys your Docker image directly, `fly launch` generates a working `fly.toml` from the `Dockerfile` you already have, secrets and a public HTTPS URL are one command each, and it runs close to your Supabase region to keep DB latency low.
+- **Cons / when Render instead:** Render offers a similarly simple Docker deploy with a Git-push workflow and a generous managed-Postgres story if you *weren't* using Supabase; the `render.yaml` equivalent of `fly.toml` is just as short. Either is a fine choice — this lesson shows Fly.io concretely; the shape (build image → set secrets → deploy → get a URL) is identical on Render.
+
+**Injecting config as host secrets** vs. **committing a production `.env`**
+
+- **Pros of host secrets:** credentials live in the platform's secret store, never in git or an image; rotating the JWT secret is a `fly secrets set` away with no rebuild.
+- **Cons:** one more place to look when something's misconfigured, and you can't `grep` a file to see what's set (you query the platform). Worth it — a committed production secret is a breach waiting to happen.
+
+## Set it up
+
+### 1. Link the hosted project and push migrations
+
+Create a project in the [Supabase dashboard](https://supabase.com/dashboard), then link your local repo to it and push the migrations. Run these from `api/` (or wherever your `supabase/` directory lives):
+
+```bash
+# Log in once, then link this repo to the hosted project by its ref
+# (the dashboard URL is .../project/<project-ref>).
+supabase login
+supabase link --project-ref <your-project-ref>
+
+# Apply every migration in supabase/migrations/ to the hosted database.
+supabase db push
+```
+
+```txt
+Applying migration 0001_core_schema.sql...
+Applying migration 0002_auth_and_rls.sql...
+Finished supabase db push.
+```
+
+The hosted database now has the four tables and the RLS policies from Module 2 — the same ones, from the same files, you tested locally.
+
+### 2. Deploy the API to Fly.io
+
+From `api/`, generate the app config without deploying yet. Fly detects the `Dockerfile` from the last lesson and writes a `fly.toml`:
+
+```bash
+fly launch --no-deploy
+```
+
+Adjust the generated `fly.toml` so the internal port matches the `EXPOSE 8000` / `--port 8000` from your Dockerfile:
+
+```toml
+# api/fly.toml
+app = "fittrack-api"
+primary_region = "sin"   # pick a region near your Supabase project
+
+[build]
+  # Uses api/Dockerfile from the previous lesson — nothing else needed.
+
+[http_service]
+  internal_port = 8000     # must match the port uvicorn binds in the image
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"        # Fly polls the health endpoint from Module 1
+    interval = "15s"
+    timeout = "2s"
+```
+
+Now set the production secrets. Get the values from the Supabase dashboard: **Project Settings → Database** gives the connection string, and **Project Settings → API → JWT Secret** gives the signing secret your [`get_current_user` dependency](/fittrack/en/auth/verify-the-jwt/) verifies against. Swap the driver to `postgresql+asyncpg` (what SQLAlchemy expects from [Async database →](/fittrack/en/fastapi/async-database/)) and use the connection pooler host for a serverless-friendly deploy:
+
+```bash
+fly secrets set \
+  DATABASE_URL="postgresql+asyncpg://postgres.<project-ref>:<db-password>@aws-0-<region>.pooler.supabase.com:6543/postgres" \
+  SUPABASE_JWT_SECRET="<your-jwt-secret>" \
+  SUPABASE_URL="https://<project-ref>.supabase.co"
+```
+
+Then deploy:
+
+```bash
+fly deploy
+```
+
+Fly builds the image (or you can `fly deploy --local-only` to reuse the one you built last lesson), boots a machine, waits for `/health` to pass, and hands you a public URL: `https://fittrack-api.fly.dev`.
+
+### 3. Ship the Flutter release build
+
+Point the app at the deployed API. The API base URL was a compile-time constant in [the Flutter API client](/fittrack/en/flutter-foundation/api-client/) — pass it with `--dart-define` so the release build targets production without editing source:
+
+```bash
+cd mobile
+flutter build apk --release \
+  --dart-define=API_BASE_URL=https://fittrack-api.fly.dev \
+  --dart-define=SUPABASE_URL=https://<project-ref>.supabase.co \
+  --dart-define=SUPABASE_ANON_KEY=<your-anon-key>
+```
+
+```txt
+✓ Built build/app/outputs/flutter-apk/app-release.apk (18.2MB)
+```
+
+That APK is a distributable release build (use `flutter build ipa` for iOS / the App Store). The `SUPABASE_ANON_KEY` is the *public* key — safe on a client, as designed in Module 1 — and every API call still carries the user's Supabase JWT to your FastAPI.
+
+### 4. Deploy the SvelteKit companion
+
+The web companion from [the dashboard lesson →](/fittrack/en/svelte-companion/dashboard/) needs an adapter to run as a real server. Use the Node adapter:
+
+```bash
+cd web
+npm install -D @sveltejs/adapter-node
+```
+
+```js
+// web/svelte.config.js
+import adapter from '@sveltejs/adapter-node';
+
+export default {
+  kit: {
+    adapter: adapter(),
+  },
+};
+```
+
+Build it, providing the same public endpoints as environment variables (SvelteKit reads `PUBLIC_`-prefixed vars on the client — the pattern from Module 11):
+
+```bash
+PUBLIC_API_BASE_URL=https://fittrack-api.fly.dev \
+PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co \
+PUBLIC_SUPABASE_ANON_KEY=<your-anon-key> \
+  npm run build
+
+node build   # serves the companion on port 3000
+```
+
+Serve `web/build` from any Node host (Fly.io, Render, a VM). It signs users in with `supabase-js` and reads their data through the same deployed FastAPI the mobile app uses — one backend, two clients, exactly as promised.
+
+## Verify
+
+First, prove the deployed API is up and reachable over HTTPS:
+
+```bash
+curl -s https://fittrack-api.fly.dev/health
+```
+
+```json
+{"status":"ok"}
+```
+
+Now prove the full auth path works end to end. A protected route must reject an anonymous request and accept a real token. Anonymous first:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://fittrack-api.fly.dev/me
+```
+
+```txt
+401
+```
+
+Then sign in on either client (or fetch a token from hosted Supabase Auth) and call `/me` with it:
+
+```bash
+curl -s https://fittrack-api.fly.dev/me \
+  -H "Authorization: Bearer <a-real-supabase-jwt>"
+```
+
+```json
+{"id":"...","display_name":""}
+```
+
+A `401` without a token and your profile *with* one means the deployed FastAPI is verifying the hosted Supabase JWT against the production secret and reading the hosted Postgres — the whole architecture, in the cloud. Finally, do it the real way: install the release APK, sign up, log a workout, and open the SvelteKit companion in a browser — the set you logged on your phone shows up on the web, because both went through the one backend.
+
+Check your understanding:
+
+- Nothing in `app/` changed between local and production. Which three environment values carried the entire difference, and where does each come from?
+- Why do you `supabase db push` migrations instead of recreating the four tables in the hosted dashboard by hand?
+- The `SUPABASE_ANON_KEY` ships inside the Flutter and Svelte builds, but `SUPABASE_JWT_SECRET` only ever lives as a Fly.io secret on the API. Why is that split correct?
+- Fly.io's `fly.toml` sets `internal_port = 8000` and health-checks `/health`. Which two things from the previous two lessons must those values agree with?
+
+## Recap
+
+FitTrack is live. You **linked the hosted Supabase project** and `supabase db push`ed the Module 2 migrations to it, so production's schema and RLS are the ones you tested locally. You **deployed the API container** from the previous lesson to Fly.io with a short `fly.toml`, injecting the hosted `DATABASE_URL`, `SUPABASE_JWT_SECRET`, and `SUPABASE_URL` as platform secrets — never baked into the image. You **shipped a Flutter release build** with `--dart-define` pointing at the public API, and **deployed the SvelteKit companion** with the Node adapter against the same backend. `curl /health` answered from the cloud, `/me` returned `401` anonymously and your profile with a real JWT, and a workout logged on the phone appeared on the web — one FastAPI backend, two clients, hosted Supabase behind it. That completes the build. Next, [the wrap-up →](/fittrack/en/wrap-up/) traces a logged set through the whole system, lays out the decisions you can now defend, and points to where FitTrack goes from here.
