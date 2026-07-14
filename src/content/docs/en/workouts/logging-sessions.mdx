@@ -1,0 +1,248 @@
+---
+title: Logging sessions
+description: "POST /workouts — the endpoint that logs a whole training session: one request carries the workout and all of its sets, and WorkoutRepo.create_with_sets persists the parent and children in a single transaction via the SQLAlchemy relationship cascade, so a workout can never be saved half-written. Why one request beats a create-workout-then-add-sets dance, why the server assigns set_index, and how selectinload returns the full nested body. Verified with a Supabase JWT and curl against localhost:8000."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+`POST /workouts` in `app/routers/workouts.py` — the endpoint at the heart of FitTrack. A workout is a **session**: a timestamp, optional notes, and a list of **sets**, where each set is an exercise plus reps plus weight. The client sends the whole thing in one request body, and `WorkoutRepo.create_with_sets` writes the `Workout` row *and* every `WorkoutSet` row in a **single transaction** — so a session is either fully logged or not logged at all, never a workout with half its sets missing.
+
+This uses the `Workout` / `WorkoutSet` models and their relationship from [The Domain Model →](/fittrack/en/domain/sqlalchemy-models/), and the `WorkoutCreate` schema (with its nested `SetInput`) from [schemas & repositories →](/fittrack/en/domain/schemas-and-repositories/). [Reading history →](/fittrack/en/workouts/reading-history/) then reads these sessions back out.
+
+## Why
+
+A workout and its sets are **one fact** — "I trained today, and here is exactly what I did." They should be created together or not at all. If the API created the workout first and then took sets one request at a time, a dropped connection halfway through leaves a workout row with three of its five sets, and now every progress calculation over that session is silently wrong. Bundling the session into **one request** and writing it in **one transaction** makes that impossible: SQLAlchemy flushes the parent and all children together, and a single `commit()` makes them all durable at once. Any error before the commit rolls the whole thing back, and the database is never left in a half-logged state.
+
+The relationship cascade is what makes this ergonomic. Because `Workout.sets` is configured with `cascade="all, delete-orphan"`, you build the object graph in Python — a `Workout` with `WorkoutSet` children appended to its `.sets` — `add()` the parent, and SQLAlchemy figures out the insert order (workout first, so its generated id can fill each set's `workout_id`) and does it all in the one unit of work. You never write the child inserts by hand.
+
+Two smaller decisions matter. First, **the server owns `set_index`**: the order of sets is their position in the request list (`enumerate`), not a number the client sends, so the stored order is always contiguous and gapless regardless of what the client does. Second, **`performed_at` defaults to now** but the client may override it, because people log a session after they finish it — the timestamp is when they *trained*, not when the request arrived. Finally, to return the created workout with its sets attached, the read has to **eager-load** the `sets` relationship (`selectinload`), because under async SQLAlchemy a lazy load outside a session context raises rather than quietly issuing a query.
+
+## Pros & cons
+
+**One request + one transaction (workout and its sets together)** vs. **create the workout, then POST sets one by one**
+
+- **Pros:** the session is **atomic** — it commits whole or rolls back whole, so a partial workout can never exist; it's one network round-trip instead of N+1; and the API models the real-world unit ("a logged session") directly instead of exposing the client to the intermediate, invalid states.
+- **Cons:** the request body is larger and nested, so the client must assemble the full session before sending (no incremental "add a set as I go" against the server — that's local UI state until save); and a validation error rejects the entire submission rather than just one bad set. For a workout logger that's the right shape — a set has no meaning without its workout.
+
+**Server-assigned `set_index` from list position** vs. **trusting a client-supplied index**
+
+- **Pros:** ordering is always contiguous and starts at zero because it's derived from the array the client already ordered; the server can't be handed duplicate or gappy indices, and the stored order is exactly the submitted order.
+- **Cons:** the client can't express an intentional non-sequential numbering (rarely wanted here), and reordering after the fact means resubmitting. For sets-in-a-session, "their order in the list" is precisely the semantics you want, so deriving it server-side removes a whole class of bad input.
+
+## Set it up
+
+### 1. `app/schemas/workout.py`
+
+The request nests `SetInput` inside `WorkoutCreate`; the response nests `SetRead` inside `WorkoutRead`. Field constraints keep reps and weight sane, and a workout must have at least one set.
+
+```python
+# app/schemas/workout.py — Pydantic v2 request/response shapes.
+import uuid
+from datetime import datetime
+from decimal import Decimal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class SetInput(BaseModel):
+    """One set as the client sends it — no set_index; the server assigns that."""
+
+    exercise_id: uuid.UUID
+    reps: int = Field(gt=0, le=1000)
+    weight_kg: Decimal = Field(ge=0, max_digits=6, decimal_places=2)
+
+
+class WorkoutCreate(BaseModel):
+    performed_at: datetime | None = None  # defaults to now() server-side
+    notes: str | None = Field(default=None, max_length=2000)
+    sets: list[SetInput] = Field(min_length=1)  # a session has at least one set
+
+
+class SetRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    exercise_id: uuid.UUID
+    set_index: int
+    reps: int
+    weight_kg: float
+
+
+class WorkoutRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    performed_at: datetime
+    notes: str | None
+    created_at: datetime
+    sets: list[SetRead]
+```
+
+### 2. `app/repositories/workout.py`
+
+`create_with_sets` builds the whole object graph and commits it once. The `set_index` comes from `enumerate`, and `refresh(..., ["sets"])` reloads the children so the response includes them.
+
+```python
+# app/repositories/workout.py — data access for workouts and their sets.
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.workout import Workout
+from app.models.workout_set import WorkoutSet
+from app.schemas.workout import WorkoutCreate
+
+
+class WorkoutRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create_with_sets(
+        self, user_id: uuid.UUID, data: WorkoutCreate
+    ) -> Workout:
+        """Persist a workout and all of its sets in one transaction. The
+        relationship cascade inserts the children with the parent; a single
+        commit makes the whole session durable, or the rollback undoes it all."""
+        workout = Workout(
+            user_id=user_id,
+            performed_at=data.performed_at or datetime.now(timezone.utc),
+            notes=data.notes,
+        )
+        for index, item in enumerate(data.sets):
+            workout.sets.append(
+                WorkoutSet(
+                    exercise_id=item.exercise_id,
+                    set_index=index,  # server owns ordering: position in the list
+                    reps=item.reps,
+                    weight_kg=item.weight_kg,
+                )
+            )
+
+        self.session.add(workout)  # cascade queues the sets too
+        await self.session.commit()  # one transaction: parent + all children
+        await self.session.refresh(workout, attribute_names=["sets"])
+        return workout
+```
+
+### 3. `app/routers/workouts.py`
+
+The handler is thin — validate the body into `WorkoutCreate`, hand it and the caller's id to the repository, return the created session as `WorkoutRead`.
+
+```python
+# app/routers/workouts.py — HTTP for workout sessions.
+import uuid
+
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth import get_current_user
+from app.db import get_session
+from app.models.workout import Workout
+from app.repositories.workout import WorkoutRepo
+from app.schemas.workout import WorkoutCreate, WorkoutRead
+
+router = APIRouter(prefix="/workouts", tags=["workouts"])
+
+
+@router.post("", response_model=WorkoutRead, status_code=status.HTTP_201_CREATED)
+async def log_workout(
+    data: WorkoutCreate,
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Workout:
+    """Log a whole session — the workout and its sets — in one transaction."""
+    return await WorkoutRepo(session).create_with_sets(user_id, data)
+```
+
+Then include it in `app/main.py` alongside the exercises router:
+
+```python
+# app/main.py
+from app.routers import exercises, workouts
+
+app.include_router(exercises.router)
+app.include_router(workouts.router)
+```
+
+## Verify
+
+Get a token (as in [the exercises verify](/fittrack/en/exercises/catalog-crud/#verify)) and make sure you have an exercise id to reference — reuse one from `GET /exercises`:
+
+```bash
+TOKEN=$(curl -s "http://127.0.0.1:54321/auth/v1/token?grant_type=password" \
+  -H "apikey: $SUPABASE_ANON_KEY" -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"password123"}' | jq -r .access_token)
+
+EX=$(curl -s localhost:8000/exercises -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id')
+```
+
+Log a session with two sets in one request:
+
+```bash
+curl -s -X POST localhost:8000/workouts \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{
+        \"notes\": \"Leg day\",
+        \"sets\": [
+          {\"exercise_id\": \"$EX\", \"reps\": 5, \"weight_kg\": 100.0},
+          {\"exercise_id\": \"$EX\", \"reps\": 5, \"weight_kg\": 102.5}
+        ]
+      }" | jq
+```
+
+```json
+{
+  "id": "3d9a...workout-id...",
+  "user_id": "b1e7...your-user-id...",
+  "performed_at": "2026-07-14T09:30:00Z",
+  "notes": "Leg day",
+  "created_at": "2026-07-14T09:30:00Z",
+  "sets": [
+    { "id": "…", "exercise_id": "…", "set_index": 0, "reps": 5, "weight_kg": 100.0 },
+    { "id": "…", "exercise_id": "…", "set_index": 1, "reps": 5, "weight_kg": 102.5 }
+  ]
+}
+```
+
+Note the `set_index` values `0` and `1` — the server assigned them from list order; you never sent them. Now confirm the validation and atomicity guarantees. A session with **no** sets violates `min_length=1` and is rejected with `422`:
+
+```bash
+curl -s -o /dev/null -w "empty sets: %{http_code}\n" -X POST localhost:8000/workouts \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"notes":"nothing","sets":[]}'
+```
+
+```txt
+empty sets: 422
+```
+
+And a set with a bad weight (`reps: 0`) is caught before anything is written — the whole session is refused, so no orphan workout is left behind:
+
+```bash
+curl -s -X POST localhost:8000/workouts \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"sets\":[{\"exercise_id\":\"$EX\",\"reps\":0,\"weight_kg\":50}]}" \
+  | jq '.detail[0] | {loc, msg}'
+```
+
+```json
+{
+  "loc": ["body", "sets", 0, "reps"],
+  "msg": "Input should be greater than 0"
+}
+```
+
+Check your understanding:
+
+- What could go wrong if the API created the workout row first and then accepted its sets in separate follow-up requests? How does one transaction rule that out?
+- `set_index` isn't in `SetInput`. Where does it come from, and why is deriving it server-side better than trusting the client?
+- Why does reading the created workout back with its sets require `selectinload` (or the `refresh(..., ["sets"])` here) under async SQLAlchemy?
+- `performed_at` defaults to `now()` but is overridable. Why should a workout logger let the client set the timestamp?
+
+## Recap
+
+`POST /workouts` logs an entire session in one shot: the request body carries the workout plus a non-empty list of sets (`WorkoutCreate` nesting `SetInput`), and `WorkoutRepo.create_with_sets` builds the `Workout` with its `WorkoutSet` children and persists them in a **single transaction** through the relationship cascade — one `commit`, all-or-nothing, so a half-logged session can't exist. The server assigns `set_index` from list position, `performed_at` defaults to now but is overridable, and the response returns the full nested session via eager-loaded `sets`. Pydantic v2 constraints reject empty or malformed submissions with a `422` before any row is written. You verified a two-set log, the server-assigned indices, and the validation gate with `curl`. Next, [Reading history →](/fittrack/en/workouts/reading-history/) reads these sessions back — a user's history newest-first, a single workout, and delete — enforcing ownership through the query itself.

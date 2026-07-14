@@ -1,0 +1,248 @@
+---
+title: Logging sessions
+description: "POST /workouts — endpoint ที่ log training session ทั้งก้อน: หนึ่ง request พก workout พร้อม set ทุกตัวของมันมา และ WorkoutRepo.create_with_sets เขียน parent กับ children ใน transaction เดียวผ่าน SQLAlchemy relationship cascade ดังนั้น workout ไม่มีทางถูกบันทึกครึ่ง ๆ กลาง ๆ ทำไมหนึ่ง request ถึงชนะการเต้นสร้าง-workout-แล้วค่อย-เพิ่ม-set, ทำไม server เป็นคนกำหนด set_index และ selectinload คืน body ที่ซ้อนกันครบอย่างไร ตรวจสอบด้วย Supabase JWT กับ curl ยิงไปที่ localhost:8000"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+`POST /workouts` ใน `app/routers/workouts.py` — endpoint หัวใจของ FitTrack workout คือ **session**: timestamp, notes ที่ใส่หรือไม่ก็ได้ และ list ของ **sets** ที่แต่ละ set คือ exercise บวก reps บวก weight client ส่งทั้งก้อนมาใน request body เดียว และ `WorkoutRepo.create_with_sets` เขียนแถว `Workout` *และ* แถว `WorkoutSet` ทุกตัวใน **transaction เดียว** — ดังนั้น session จะถูก log ครบทั้งหมด หรือไม่ถูก log เลย ไม่มีทางเป็น workout ที่ set หายไปครึ่งหนึ่ง
+
+สิ่งนี้ใช้ model `Workout` / `WorkoutSet` และ relationship ของมันจาก [The Domain Model →](/fittrack/th/domain/sqlalchemy-models/) และ schema `WorkoutCreate` (พร้อม `SetInput` ที่ซ้อนอยู่) จาก [schemas & repositories →](/fittrack/th/domain/schemas-and-repositories/) จากนั้น [Reading history →](/fittrack/th/workouts/reading-history/) อ่าน session พวกนี้กลับออกมา
+
+## Why
+
+workout กับ set ของมันคือ **หนึ่งข้อเท็จจริง** — "วันนี้ฉันเทรน และนี่คือสิ่งที่ฉันทำเป๊ะ ๆ" มันควรถูกสร้างพร้อมกันหรือไม่สร้างเลย ถ้า API สร้าง workout ก่อนแล้วค่อยรับ set ทีละ request การหลุดของ connection กลางคันทิ้ง workout ที่มี set สามในห้าตัวไว้ และตอนนี้ทุกการคำนวณ progress เหนือ session นั้นผิดเงียบ ๆ การรวม session ไว้ใน **request เดียว** แล้วเขียนใน **transaction เดียว** ทำให้เรื่องนั้นเป็นไปไม่ได้: SQLAlchemy flush parent กับ children ทุกตัวพร้อมกัน และ `commit()` เดียวทำให้ทั้งหมด durable ในคราวเดียว error ใด ๆ ก่อน commit roll back ทั้งก้อน และ database ไม่เคยถูกทิ้งไว้ในสถานะที่ log ครึ่ง ๆ
+
+relationship cascade คือสิ่งที่ทำให้แบบนี้ใช้งานสะดวก เพราะ `Workout.sets` ถูกตั้งค่าด้วย `cascade="all, delete-orphan"` คุณสร้าง object graph ใน Python — `Workout` ที่มี `WorkoutSet` children ต่อเข้าที่ `.sets` — `add()` parent แล้ว SQLAlchemy คิดลำดับ insert ให้เอง (workout ก่อน เพื่อให้ id ที่ generate มาเติมลง `workout_id` ของแต่ละ set ได้) แล้วทำทั้งหมดใน unit of work เดียว คุณไม่เคยเขียน child insert ด้วยมือ
+
+การตัดสินใจเล็ก ๆ สองอย่างสำคัญ อย่างแรก **server เป็นเจ้าของ `set_index`**: ลำดับของ set คือตำแหน่งของมันใน request list (`enumerate`) ไม่ใช่เลขที่ client ส่งมา ดังนั้นลำดับที่เก็บไว้ต่อเนื่องและไม่มีช่องว่างเสมอ ไม่ว่า client จะทำอะไร อย่างที่สอง **`performed_at` default เป็นตอนนี้** แต่ client override ได้ เพราะคนมัก log session หลังจากทำเสร็จ — timestamp คือตอนที่พวกเขา *เทรน* ไม่ใช่ตอนที่ request มาถึง สุดท้าย เพื่อคืน workout ที่สร้างพร้อม set ที่ต่ออยู่ การอ่านต้อง **eager-load** relationship `sets` (`selectinload`) เพราะภายใต้ async SQLAlchemy การ lazy load นอก session context จะ raise แทนที่จะยิง query เงียบ ๆ
+
+## Pros & cons
+
+**One request + one transaction (workout and its sets together)** vs. **create the workout, then POST sets one by one**
+
+- **Pros:** session เป็น **atomic** — commit ทั้งก้อนหรือ roll back ทั้งก้อน ดังนั้น workout ที่ไม่สมบูรณ์ไม่มีทางมีอยู่ มันเป็น network round-trip เดียวแทนที่จะเป็น N+1 และ API model หน่วยในโลกจริง ("session ที่ถูก log") ตรง ๆ แทนที่จะเปิด client ให้เจอสถานะกลางที่ไม่ถูกต้อง
+- **Cons:** request body ใหญ่กว่าและซ้อนกัน ดังนั้น client ต้องประกอบ session ทั้งอันก่อนส่ง (ไม่มีการ "เพิ่ม set ระหว่างทาง" แบบ incremental ยิงไปที่ server — นั่นเป็น local UI state จนกว่าจะ save) และ validation error ปฏิเสธการส่งทั้งชุดแทนที่จะเป็นแค่ set เดียวที่แย่ สำหรับ workout logger นั่นคือรูปที่ถูก — set ไม่มีความหมายถ้าไม่มี workout ของมัน
+
+**Server-assigned `set_index` from list position** vs. **trusting a client-supplied index**
+
+- **Pros:** ลำดับต่อเนื่องเสมอและเริ่มที่ศูนย์ เพราะมันถูก derive จาก array ที่ client เรียงมาแล้ว server ไม่มีทางถูกส่ง index ที่ซ้ำหรือมีช่องว่างมา และลำดับที่เก็บไว้คือลำดับที่ส่งมาเป๊ะ ๆ
+- **Cons:** client แสดง numbering ที่ตั้งใจให้ไม่เรียงลำดับไม่ได้ (แทบไม่ต้องการในนี้) และการจัดลำดับใหม่ภายหลังแปลว่าต้องส่งใหม่ สำหรับ set-ใน-session "ลำดับของมันใน list" คือ semantics ที่คุณต้องการเป๊ะ ๆ ดังนั้นการ derive มันฝั่ง server ตัด input แย่ ๆ ทั้งกลุ่มออกไป
+
+## Set it up
+
+### 1. `app/schemas/workout.py`
+
+request ซ้อน `SetInput` ไว้ใน `WorkoutCreate` ส่วน response ซ้อน `SetRead` ไว้ใน `WorkoutRead` field constraint คุมให้ reps กับ weight สมเหตุสมผล และ workout ต้องมีอย่างน้อยหนึ่ง set
+
+```python
+# app/schemas/workout.py — Pydantic v2 request/response shapes.
+import uuid
+from datetime import datetime
+from decimal import Decimal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class SetInput(BaseModel):
+    """One set as the client sends it — no set_index; the server assigns that."""
+
+    exercise_id: uuid.UUID
+    reps: int = Field(gt=0, le=1000)
+    weight_kg: Decimal = Field(ge=0, max_digits=6, decimal_places=2)
+
+
+class WorkoutCreate(BaseModel):
+    performed_at: datetime | None = None  # defaults to now() server-side
+    notes: str | None = Field(default=None, max_length=2000)
+    sets: list[SetInput] = Field(min_length=1)  # a session has at least one set
+
+
+class SetRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    exercise_id: uuid.UUID
+    set_index: int
+    reps: int
+    weight_kg: float
+
+
+class WorkoutRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    performed_at: datetime
+    notes: str | None
+    created_at: datetime
+    sets: list[SetRead]
+```
+
+### 2. `app/repositories/workout.py`
+
+`create_with_sets` สร้าง object graph ทั้งก้อนแล้ว commit มันครั้งเดียว `set_index` มาจาก `enumerate` และ `refresh(..., ["sets"])` โหลด children กลับมาเพื่อให้ response รวมมันด้วย
+
+```python
+# app/repositories/workout.py — data access for workouts and their sets.
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.workout import Workout
+from app.models.workout_set import WorkoutSet
+from app.schemas.workout import WorkoutCreate
+
+
+class WorkoutRepo:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create_with_sets(
+        self, user_id: uuid.UUID, data: WorkoutCreate
+    ) -> Workout:
+        """Persist a workout and all of its sets in one transaction. The
+        relationship cascade inserts the children with the parent; a single
+        commit makes the whole session durable, or the rollback undoes it all."""
+        workout = Workout(
+            user_id=user_id,
+            performed_at=data.performed_at or datetime.now(timezone.utc),
+            notes=data.notes,
+        )
+        for index, item in enumerate(data.sets):
+            workout.sets.append(
+                WorkoutSet(
+                    exercise_id=item.exercise_id,
+                    set_index=index,  # server owns ordering: position in the list
+                    reps=item.reps,
+                    weight_kg=item.weight_kg,
+                )
+            )
+
+        self.session.add(workout)  # cascade queues the sets too
+        await self.session.commit()  # one transaction: parent + all children
+        await self.session.refresh(workout, attribute_names=["sets"])
+        return workout
+```
+
+### 3. `app/routers/workouts.py`
+
+handler บาง — validate body เป็น `WorkoutCreate`, ส่งมันกับ id ของ caller ให้ repository, คืน session ที่สร้างเป็น `WorkoutRead`
+
+```python
+# app/routers/workouts.py — HTTP for workout sessions.
+import uuid
+
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth import get_current_user
+from app.db import get_session
+from app.models.workout import Workout
+from app.repositories.workout import WorkoutRepo
+from app.schemas.workout import WorkoutCreate, WorkoutRead
+
+router = APIRouter(prefix="/workouts", tags=["workouts"])
+
+
+@router.post("", response_model=WorkoutRead, status_code=status.HTTP_201_CREATED)
+async def log_workout(
+    data: WorkoutCreate,
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Workout:
+    """Log a whole session — the workout and its sets — in one transaction."""
+    return await WorkoutRepo(session).create_with_sets(user_id, data)
+```
+
+จากนั้น include มันใน `app/main.py` ควบคู่กับ exercises router:
+
+```python
+# app/main.py
+from app.routers import exercises, workouts
+
+app.include_router(exercises.router)
+app.include_router(workouts.router)
+```
+
+## Verify
+
+ขอ token (เหมือนใน [exercises verify](/fittrack/th/exercises/catalog-crud/#verify)) แล้วให้แน่ใจว่าคุณมี exercise id ให้อ้างถึง — reuse ตัวหนึ่งจาก `GET /exercises`:
+
+```bash
+TOKEN=$(curl -s "http://127.0.0.1:54321/auth/v1/token?grant_type=password" \
+  -H "apikey: $SUPABASE_ANON_KEY" -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"password123"}' | jq -r .access_token)
+
+EX=$(curl -s localhost:8000/exercises -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id')
+```
+
+log session ที่มีสอง set ใน request เดียว:
+
+```bash
+curl -s -X POST localhost:8000/workouts \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{
+        \"notes\": \"Leg day\",
+        \"sets\": [
+          {\"exercise_id\": \"$EX\", \"reps\": 5, \"weight_kg\": 100.0},
+          {\"exercise_id\": \"$EX\", \"reps\": 5, \"weight_kg\": 102.5}
+        ]
+      }" | jq
+```
+
+```json
+{
+  "id": "3d9a...workout-id...",
+  "user_id": "b1e7...your-user-id...",
+  "performed_at": "2026-07-14T09:30:00Z",
+  "notes": "Leg day",
+  "created_at": "2026-07-14T09:30:00Z",
+  "sets": [
+    { "id": "…", "exercise_id": "…", "set_index": 0, "reps": 5, "weight_kg": 100.0 },
+    { "id": "…", "exercise_id": "…", "set_index": 1, "reps": 5, "weight_kg": 102.5 }
+  ]
+}
+```
+
+สังเกตค่า `set_index` `0` กับ `1` — server กำหนดมันจากลำดับใน list คุณไม่เคยส่งมันมา ตอนนี้ยืนยันการรับประกัน validation และ atomicity session ที่ **ไม่มี** set ละเมิด `min_length=1` และถูกปฏิเสธด้วย `422`:
+
+```bash
+curl -s -o /dev/null -w "empty sets: %{http_code}\n" -X POST localhost:8000/workouts \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"notes":"nothing","sets":[]}'
+```
+
+```txt
+empty sets: 422
+```
+
+และ set ที่ weight แย่ (`reps: 0`) ถูกจับได้ก่อนอะไรจะถูกเขียน — session ทั้งอันถูกปฏิเสธ ดังนั้นไม่มี orphan workout ทิ้งไว้ข้างหลัง:
+
+```bash
+curl -s -X POST localhost:8000/workouts \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"sets\":[{\"exercise_id\":\"$EX\",\"reps\":0,\"weight_kg\":50}]}" \
+  | jq '.detail[0] | {loc, msg}'
+```
+
+```json
+{
+  "loc": ["body", "sets", 0, "reps"],
+  "msg": "Input should be greater than 0"
+}
+```
+
+ตรวจสอบความเข้าใจ:
+
+- อะไรอาจผิดพลาดถ้า API สร้างแถว workout ก่อนแล้วค่อยรับ set ของมันใน request ตามมาแยกกัน? transaction เดียวตัดเรื่องนั้นออกอย่างไร?
+- `set_index` ไม่อยู่ใน `SetInput` มันมาจากไหน และทำไมการ derive มันฝั่ง server ถึงดีกว่าเชื่อ client?
+- ทำไมการอ่าน workout ที่สร้างกลับพร้อม set ของมันถึงต้องใช้ `selectinload` (หรือ `refresh(..., ["sets"])` ที่นี่) ภายใต้ async SQLAlchemy?
+- `performed_at` default เป็น `now()` แต่ override ได้ ทำไม workout logger ควรให้ client เซ็ต timestamp?
+
+## Recap
+
+`POST /workouts` log session ทั้งอันในทีเดียว: request body พก workout บวก list ของ set ที่ไม่ว่าง (`WorkoutCreate` ซ้อน `SetInput`) และ `WorkoutRepo.create_with_sets` สร้าง `Workout` พร้อม `WorkoutSet` children แล้วเขียนมันใน **transaction เดียว** ผ่าน relationship cascade — `commit` เดียว, all-or-nothing, ดังนั้น session ที่ log ครึ่ง ๆ มีอยู่ไม่ได้ server กำหนด `set_index` จากตำแหน่งใน list, `performed_at` default เป็นตอนนี้แต่ override ได้ และ response คืน session ที่ซ้อนกันครบผ่าน `sets` ที่ eager-load Pydantic v2 constraint ปฏิเสธการส่งที่ว่างหรือผิดรูปด้วย `422` ก่อนแถวใด ๆ ถูกเขียน คุณตรวจสอบการ log สอง set, index ที่ server กำหนด และ validation gate ด้วย `curl` ต่อไป [Reading history →](/fittrack/th/workouts/reading-history/) อ่าน session พวกนี้กลับ — history ของ user เรียงใหม่สุดก่อน, workout ตัวเดียว และ delete — บังคับ ownership ผ่านตัว query เอง

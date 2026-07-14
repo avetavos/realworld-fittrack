@@ -1,0 +1,197 @@
+---
+title: Reading history
+description: "The read side of workouts: GET /workouts returns the caller's own history newest-first, GET /workouts/{id} fetches one session with its sets, DELETE /workouts/{id} removes one — all scoped to the owner by a user_id filter in the query, so a workout you don't own is indistinguishable from one that doesn't exist (404). Why filter-by-owner beats fetch-then-check, and why selectinload is mandatory under async. Verified with a Supabase JWT and curl against localhost:8000."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+The read and delete side of `app/routers/workouts.py`, over the sessions [Logging sessions →](/fittrack/en/workouts/logging-sessions/) writes:
+
+- `GET /workouts` — the caller's own workout history, **newest first**.
+- `GET /workouts/{id}` — a single session with all its sets.
+- `DELETE /workouts/{id}` — remove one of the caller's sessions.
+
+Every route is scoped to the **owner**. Unlike the exercise catalog, workouts are never shared — they're personal training history — so there's no public/private distinction to reason about: a workout is either yours or, as far as the API is concerned, it doesn't exist. We enforce that by putting `user_id` in the `WHERE` clause of every query, which turns ownership into a property of the fetch itself.
+
+## Why
+
+The cleanest way to enforce "you can only touch your own workouts" is to make it **impossible to fetch someone else's in the first place**. Rather than load a workout by id and *then* compare its `user_id` to the caller (fetch-then-check), every query filters on `Workout.user_id == caller` up front. A workout belonging to another user simply doesn't come back — `scalar_one_or_none()` returns `None` — and the route returns `404`. There's no separate authorization branch to forget, no window where the row is in memory before the check, and the "not yours" and "not there" cases collapse into the same honest `404`: your history contains it or it doesn't, and you can't probe for the existence of other people's sessions. (This is the mirror of the exercise catalog, where public exercises *are* shared and so needed an explicit `403`; workouts share nothing, so the filter is the whole story.)
+
+**Newest-first** is the default a history screen wants: `order_by(Workout.performed_at.desc())`. Someone opening FitTrack cares about what they did today, not their first-ever session, so the API returns the most recent at the top rather than making the client re-sort.
+
+And as in the write path, reading a workout with its sets means **eager-loading** the `sets` relationship with `selectinload`. Under async SQLAlchemy this isn't optional: a lazy load triggered while serializing the response — outside the session's `await` context — raises `MissingGreenlet` instead of quietly running a query. `selectinload` fetches all the sets for the returned workouts in one additional query up front, so the nested `WorkoutRead` serializes cleanly and you avoid the N+1 a naive per-workout lazy load would cause.
+
+## Pros & cons
+
+**Ownership as a `WHERE user_id = :me` filter** vs. **fetch by id, then check ownership in the handler**
+
+- **Pros:** the query can only ever return the caller's rows, so there's no authorization step to forget and no moment where another user's data sits in memory; "not yours" and "not found" become the same `404`, which also stops a client probing whether a given id exists for someone else; and the same filter powers list, get, and delete identically.
+- **Cons:** you can't distinguish "this workout exists but belongs to someone else" from "no such workout" — which is exactly what you want for private data, but would be wrong for a shared resource where a `403` is more honest (the exercise catalog). The pattern is right precisely because workouts are never shared.
+
+**`selectinload` eager loading** vs. **lazy-loading `workout.sets` on access**
+
+- **Pros:** all sets load in one extra query before serialization, so the nested response is correct and there's no N+1; and it works under async SQLAlchemy, where lazy loading during response serialization simply errors.
+- **Cons:** you fetch the sets even for a caller who only wanted the workout headers (a little over-fetching on the list endpoint), and you have to remember the `.options(...)` on every query that returns a workout. Given that the workout body *includes* its sets, loading them eagerly is what the response needs anyway.
+
+## Set it up
+
+### 1. `app/repositories/workout.py`
+
+Three more methods on `WorkoutRepo`, each carrying the `user_id` filter. `list_for_user` and `get_for_user` eager-load `sets`; `delete` relies on the model's cascade to remove the child sets with the parent.
+
+```python
+# app/repositories/workout.py — add to WorkoutRepo.
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
+
+class WorkoutRepo:
+    # ... __init__, create_with_sets from the previous lesson ...
+
+    async def list_for_user(self, user_id: uuid.UUID) -> list[Workout]:
+        """The caller's history, newest first, each with its sets loaded."""
+        result = await self.session.execute(
+            select(Workout)
+            .where(Workout.user_id == user_id)
+            .order_by(Workout.performed_at.desc())
+            .options(selectinload(Workout.sets))
+        )
+        return list(result.scalars().all())
+
+    async def get_for_user(
+        self, workout_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Workout | None:
+        """One session — but only if it's the caller's. Ownership is in the
+        WHERE clause, so someone else's workout returns None (→ 404)."""
+        result = await self.session.execute(
+            select(Workout)
+            .where(Workout.id == workout_id, Workout.user_id == user_id)
+            .options(selectinload(Workout.sets))
+        )
+        return result.scalar_one_or_none()
+
+    async def delete(self, workout: Workout) -> None:
+        """Delete the workout; the cascade removes its sets too."""
+        await self.session.delete(workout)
+        await self.session.commit()
+```
+
+### 2. `app/routers/workouts.py`
+
+`GET /workouts` needs no id check — the filter already scopes it. The single-workout routes fetch through `get_for_user` and `404` on `None`, so ownership and existence are the same branch.
+
+```python
+# app/routers/workouts.py — add to the router from the previous lesson.
+from fastapi import HTTPException
+
+
+@router.get("", response_model=list[WorkoutRead])
+async def list_workouts(
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[Workout]:
+    """The caller's own workout history, newest first."""
+    return await WorkoutRepo(session).list_for_user(user_id)
+
+
+@router.get("/{workout_id}", response_model=WorkoutRead)
+async def get_workout(
+    workout_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Workout:
+    workout = await WorkoutRepo(session).get_for_user(workout_id, user_id)
+    if workout is None:  # not yours or not there — same 404
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Workout not found")
+    return workout
+
+
+@router.delete("/{workout_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_workout(
+    workout_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    repo = WorkoutRepo(session)
+    workout = await repo.get_for_user(workout_id, user_id)
+    if workout is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Workout not found")
+    await repo.delete(workout)
+```
+
+## Verify
+
+Get a token and log a couple of sessions (see [Logging sessions →](/fittrack/en/workouts/logging-sessions/#verify)) so there's history to read. Then list it — newest first:
+
+```bash
+TOKEN=$(curl -s "http://127.0.0.1:54321/auth/v1/token?grant_type=password" \
+  -H "apikey: $SUPABASE_ANON_KEY" -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"password123"}' | jq -r .access_token)
+
+curl -s localhost:8000/workouts -H "Authorization: Bearer $TOKEN" \
+  | jq 'map({id, performed_at, sets: (.sets | length)})'
+```
+
+```json
+[
+  { "id": "7c2f…", "performed_at": "2026-07-14T18:05:00Z", "sets": 3 },
+  { "id": "3d9a…", "performed_at": "2026-07-14T09:30:00Z", "sets": 2 }
+]
+```
+
+The `18:05` session sorts above the `09:30` one — `order_by(performed_at.desc())` at work. Fetch a single session and confirm its sets come back nested:
+
+```bash
+WID=$(curl -s localhost:8000/workouts -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id')
+curl -s localhost:8000/workouts/$WID -H "Authorization: Bearer $TOKEN" \
+  | jq '{id, sets: [.sets[] | {set_index, reps, weight_kg}]}'
+```
+
+```json
+{
+  "id": "7c2f…",
+  "sets": [
+    { "set_index": 0, "reps": 8, "weight_kg": 60.0 },
+    { "set_index": 1, "reps": 8, "weight_kg": 60.0 },
+    { "set_index": 2, "reps": 6, "weight_kg": 65.0 }
+  ]
+}
+```
+
+Confirm ownership scoping — a random id (or another user's workout) is a `404`, never a leak:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" \
+  localhost:8000/workouts/00000000-0000-0000-0000-000000000000 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```txt
+404
+```
+
+Delete a session, then prove it's gone and the list shrank:
+
+```bash
+curl -s -o /dev/null -w "delete: %{http_code}\n" -X DELETE \
+  localhost:8000/workouts/$WID -H "Authorization: Bearer $TOKEN"
+curl -s localhost:8000/workouts -H "Authorization: Bearer $TOKEN" | jq length
+```
+
+```txt
+delete: 204
+1
+```
+
+Check your understanding:
+
+- Putting `user_id` in the `WHERE` clause makes "not yours" and "not found" the same `404`. Why is that the right outcome for workouts, when the exercise catalog deliberately returns `403` for "not yours"?
+- What error does async SQLAlchemy raise if you drop the `selectinload` and let `WorkoutRead` lazy-load `workout.sets` during serialization?
+- `delete_workout` calls `get_for_user` before deleting, even though it could issue a delete filtered by `user_id` directly. What does fetching first give you?
+- The child `WorkoutSet` rows vanish when their workout is deleted, but the delete only removes the `Workout`. What makes the sets go with it?
+
+## Recap
+
+The read side of workouts is owner-scoped by construction: `GET /workouts` returns the caller's history newest-first, `GET /workouts/{id}` returns one session with its sets, and `DELETE /workouts/{id}` removes one — all filtered on `Workout.user_id == caller` inside the query, so another user's workout is indistinguishable from a nonexistent one and both return `404`. That filter-by-owner pattern replaces a fetch-then-check authorization branch and can't be forgotten; `selectinload` eager-loads `sets` so the nested response serializes correctly under async, and the model's cascade removes a workout's sets along with it on delete. You verified newest-first ordering, nested sets, the ownership `404`, and delete with `curl`. That completes the Workouts API — next, [Progress & Stats →](/fittrack/en/progress/) turns this logged history into insight: personal records, weekly volume, and per-exercise trends, computed with SQL aggregations.
