@@ -1,0 +1,343 @@
+---
+title: History and progress
+description: "Read the data back: a history list from GET /workouts and a progress screen from the GET /progress/* endpoints (personal records and weekly volume). FutureProviders wrap each fetch so screens render loading, error, and data states with AsyncValue.when, and pull-to-refresh invalidates the provider. Why read models are separate from the draft, and why the server computes the aggregates. Verified by seeing a logged workout in history and a PR on the progress screen."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+The read side of FitTrack's mobile app: a **history list** that shows past sessions from `GET /workouts`, and a **progress screen** that surfaces the [Progress & Stats →](/fittrack/en/progress/) aggregates — **personal records** (`GET /progress/records`, best weight per exercise) and **weekly volume** (`GET /progress/volume?weeks=N`, total `reps × weight` per week). Each fetch is a Riverpod **`FutureProvider`**, so every screen renders **loading, error, and data** states cleanly with `AsyncValue.when`, and **pull-to-refresh** re-runs a fetch by invalidating its provider.
+
+By the end, the workout you logged last lesson appears in history with its sets, and the progress screen shows your top lifts and a weekly-volume breakdown — all read straight from the FastAPI backend through the same [API client →](/fittrack/en/flutter-foundation/api-client/), with no client-side aggregation.
+
+## Why
+
+Reading data has a different shape from writing it, and FitTrack keeps the two apart. The logging screen owns a mutable **draft**; the history and progress screens own **read models** fetched from the server and never edited. Conflating them — reusing the draft type for display, or letting a screen mutate fetched data — is how read and write concerns bleed together. Separate `Workout` read models keep each side honest: the draft serializes *to* the API, the read models deserialize *from* it.
+
+Every one of these fetches is **async server state**, which is precisely what a **`FutureProvider`** models. Wrap `api.listWorkouts()` once and Riverpod gives you an `AsyncValue` with three cases — `loading`, `error`, `data` — that `AsyncValue.when` renders exhaustively, so a screen can't forget its spinner or its error message. **Pull-to-refresh** is then just `ref.invalidate(theProvider)`: Riverpod re-runs the fetch and the `when` block flips back through loading to fresh data, no manual `isRefreshing` flag anywhere.
+
+The aggregates are computed **on the server**, not in the app. `GET /progress/records` returns each exercise's best weight; `GET /progress/volume` returns weekly totals — both produced by SQL aggregations in the [Progress module](/fittrack/en/progress/). The client just renders them. That's deliberate: the database can compute a max or a grouped sum over all of a user's history in one query far more efficiently than the app could by fetching every set and looping, and the **Svelte companion** gets the identical numbers from the identical endpoints — the whole reason FitTrack has one backend for two clients. The app's job is presentation; the server's job is truth.
+
+## Pros & cons
+
+**`FutureProvider` + `AsyncValue.when` per endpoint** vs. **a manual `FutureBuilder` with hand-rolled loading/error flags**
+
+- **Pros:** loading, error, and data are handled exhaustively by one `when`, so no state is forgotten; `ref.invalidate` gives pull-to-refresh for free; the fetched value is cached and shared across widgets; and the provider is overridable in tests. New screens follow the identical pattern.
+- **Cons:** it's Riverpod-specific structure to learn, and for a truly one-off fetch a bare `FutureBuilder` is fewer moving parts. Across several read screens that all want refresh and consistent error handling, the provider pattern wins on uniformity.
+
+**Server-computed aggregates (PRs, volume) fetched as-is** vs. **fetching all workouts and computing stats in the app**
+
+- **Pros:** one efficient SQL query instead of shipping every set to the phone and looping; both clients get identical numbers from one source; and the app stays light and offline-cheap on data. Adding a new stat is a backend endpoint, not client math duplicated per platform.
+- **Cons:** the client can't compute a novel breakdown without a backend change, and it depends on the server for every view. For stats that must match across clients and scale with history, server-side aggregation is the right call.
+
+## Set it up
+
+### 1. Read models — extend `lib/src/features/workouts/models.dart`
+
+```dart
+// lib/src/features/workouts/models.dart (add)
+/// A set as returned by the API (read side).
+class WorkoutSet {
+  const WorkoutSet({
+    required this.exerciseId,
+    required this.reps,
+    required this.weightKg,
+  });
+
+  factory WorkoutSet.fromJson(Map<String, dynamic> json) => WorkoutSet(
+        exerciseId: json['exercise_id'] as String,
+        reps: json['reps'] as int,
+        weightKg: (json['weight_kg'] as num).toDouble(),
+      );
+
+  final String exerciseId;
+  final int reps;
+  final double weightKg;
+}
+
+/// A logged workout from GET /workouts, with its sets.
+class Workout {
+  const Workout({
+    required this.id,
+    required this.performedAt,
+    required this.sets,
+    this.notes,
+  });
+
+  factory Workout.fromJson(Map<String, dynamic> json) => Workout(
+        id: json['id'] as String,
+        performedAt: DateTime.parse(json['performed_at'] as String),
+        notes: json['notes'] as String?,
+        sets: (json['sets'] as List<dynamic>)
+            .map((s) => WorkoutSet.fromJson(s as Map<String, dynamic>))
+            .toList(),
+      );
+
+  final String id;
+  final DateTime performedAt;
+  final String? notes;
+  final List<WorkoutSet> sets;
+}
+
+/// A personal record from GET /progress/records.
+class PersonalRecord {
+  const PersonalRecord({required this.exerciseName, required this.bestWeightKg});
+
+  factory PersonalRecord.fromJson(Map<String, dynamic> json) => PersonalRecord(
+        exerciseName: json['exercise_name'] as String,
+        bestWeightKg: (json['best_weight_kg'] as num).toDouble(),
+      );
+
+  final String exerciseName;
+  final double bestWeightKg;
+}
+```
+
+### 2. Read providers — `lib/src/features/workouts/history_providers.dart`
+
+```dart
+// lib/src/features/workouts/history_providers.dart
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/api/api_providers.dart';
+import 'models.dart';
+
+/// Workout history, most recent first, from GET /workouts.
+final workoutsProvider = FutureProvider<List<Workout>>((ref) async {
+  final rows = await ref.watch(apiProvider).listWorkouts();
+  return rows
+      .map((w) => Workout.fromJson(w as Map<String, dynamic>))
+      .toList();
+});
+
+/// Personal records (best weight per exercise) from GET /progress/records.
+final recordsProvider = FutureProvider<List<PersonalRecord>>((ref) async {
+  final rows = await ref.watch(apiProvider).progressRecords();
+  return rows
+      .map((r) => PersonalRecord.fromJson(r as Map<String, dynamic>))
+      .toList();
+});
+
+/// Weekly total volume from GET /progress/volume?weeks=N.
+/// The API returns a JSON array: [ { "week_start": ..., "volume_kg": ... }, ... ].
+final volumeProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+  final data = await ref.watch(apiProvider).progressVolume(weeks: 8);
+  return (data as List<dynamic>).cast<Map<String, dynamic>>();
+});
+```
+
+### 3. The history screen — `lib/src/features/workouts/history_screen.dart`
+
+`AsyncValue.when` renders all three states; `RefreshIndicator` invalidates the provider to pull-to-refresh.
+
+```dart
+// lib/src/features/workouts/history_screen.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'history_providers.dart';
+
+class HistoryScreen extends ConsumerWidget {
+  const HistoryScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final workoutsAsync = ref.watch(workoutsProvider);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('History')),
+      body: workoutsAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => Center(child: Text('Could not load history: $e')),
+        data: (workouts) {
+          if (workouts.isEmpty) {
+            return const Center(child: Text('No workouts yet.'));
+          }
+          return RefreshIndicator(
+            onRefresh: () async => ref.invalidate(workoutsProvider),
+            child: ListView.builder(
+              itemCount: workouts.length,
+              itemBuilder: (context, i) {
+                final w = workouts[i];
+                final date = w.performedAt.toLocal().toString().split(' ').first;
+                return ListTile(
+                  title: Text(date),
+                  subtitle: Text('${w.sets.length} sets'
+                      '${w.notes != null ? ' · ${w.notes}' : ''}'),
+                );
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+```
+
+### 4. The progress screen — `lib/src/features/workouts/progress_screen.dart`
+
+Two sections over two providers: personal records and weekly volume.
+
+```dart
+// lib/src/features/workouts/progress_screen.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'history_providers.dart';
+
+class ProgressScreen extends ConsumerWidget {
+  const ProgressScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final records = ref.watch(recordsProvider);
+    final volume = ref.watch(volumeProvider);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Progress')),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          ref.invalidate(recordsProvider);
+          ref.invalidate(volumeProvider);
+        },
+        child: ListView(
+          children: [
+            const _SectionHeader('Personal records'),
+            records.when(
+              loading: () => const _Loading(),
+              error: (e, _) => _Error('records', e),
+              data: (prs) => Column(
+                children: [
+                  for (final pr in prs)
+                    ListTile(
+                      title: Text(pr.exerciseName),
+                      trailing: Text('${pr.bestWeightKg} kg'),
+                    ),
+                ],
+              ),
+            ),
+            const _SectionHeader('Weekly volume'),
+            volume.when(
+              loading: () => const _Loading(),
+              error: (e, _) => _Error('volume', e),
+              data: (weeks) => Column(
+                children: [
+                  for (final w in weeks)
+                    ListTile(
+                      title: Text(w['week_start'].toString()),
+                      trailing: Text('${w['volume_kg']} kg'),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader(this.title);
+  final String title;
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+        child: Text(title, style: Theme.of(context).textTheme.titleMedium),
+      );
+}
+
+class _Loading extends StatelessWidget {
+  const _Loading();
+  @override
+  Widget build(BuildContext context) => const Padding(
+        padding: EdgeInsets.all(24),
+        child: Center(child: CircularProgressIndicator()),
+      );
+}
+
+class _Error extends StatelessWidget {
+  const _Error(this.what, this.error);
+  final String what;
+  final Object error;
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text('Could not load $what: $error'),
+      );
+}
+```
+
+### 5. Route to both — update `lib/src/router.dart` and the home screen
+
+```dart
+// lib/src/router.dart — inside routes: [ ... ]
+GoRoute(
+  path: '/history',
+  builder: (context, state) => const HistoryScreen(),
+),
+GoRoute(
+  path: '/progress',
+  builder: (context, state) => const ProgressScreen(),
+),
+```
+
+```dart
+// lib/src/features/workouts/home_screen.dart — buttons in the body
+FilledButton.icon(
+  onPressed: () => context.go('/history'),
+  icon: const Icon(Icons.history),
+  label: const Text('History'),
+),
+FilledButton.icon(
+  onPressed: () => context.go('/progress'),
+  icon: const Icon(Icons.trending_up),
+  label: const Text('Progress'),
+),
+```
+
+## Verify
+
+With the backend running and at least the workout you logged last lesson saved, analyze and run:
+
+```bash
+flutter analyze
+flutter run \
+  --dart-define=SUPABASE_URL=https://your-project-ref.supabase.co \
+  --dart-define=SUPABASE_ANON_KEY=your-anon-key \
+  --dart-define=API_BASE_URL=http://10.0.2.2:8000
+```
+
+Sign in and open **History**: the session you logged appears with its date and "2 sets". Pull down to refresh — the spinner shows and the list re-fetches from `GET /workouts`. Open **Progress**: under **Personal records** you see your best weight for each exercise, and under **Weekly volume** the total `reps × weight` for recent weeks. Cross-check the numbers against the raw endpoint:
+
+```bash
+curl -s localhost:8000/progress/records \
+  -H "Authorization: Bearer <your-jwt>" | jq '.[0]'
+```
+
+```json
+{"exercise_name": "Bench Press", "best_weight_kg": 60.0}
+```
+
+The value on screen matches the server's — because the server computed it, not the app. Keep the guard green:
+
+```bash
+flutter test
+```
+
+```txt
+00:02 +1: All tests passed!
+```
+
+Check your understanding:
+
+- Why do the history and progress screens use separate `Workout`/`PersonalRecord` read models instead of reusing the `WorkoutDraft` from the logging screen?
+- `AsyncValue.when` forces you to handle three cases. Name them, and explain what a `RefreshIndicator`'s `onRefresh` does to move the provider back through them.
+- The personal records and weekly volume are computed on the server, not by looping over fetched workouts in the app. Give two reasons that's the better split.
+- Both the Flutter app and the Svelte companion call `GET /progress/records`. Why does that guarantee the two clients show the same numbers?
+
+## Recap
+
+The mobile app now reads its data back: `FutureProvider`s wrap `GET /workouts`, `GET /progress/records`, and `GET /progress/volume`, and the history and progress screens render **loading, error, and data** exhaustively with `AsyncValue.when`, with pull-to-refresh implemented as `ref.invalidate`. Read models (`Workout`, `PersonalRecord`) stay separate from the logging draft, and every aggregate is **computed on the server** and rendered as-is — the same numbers the web companion will show, because both clients call the same [Progress endpoints](/fittrack/en/progress/). That completes the Flutter client: sign-in, a typed API client, logging, history, and progress, all on one shared backend. Next, [Svelte Web Companion →](/fittrack/en/svelte-companion/) builds a read-focused web dashboard on that very same FastAPI, proving the one-backend-two-clients architecture end to end.

@@ -1,0 +1,354 @@
+---
+title: The logging UI
+description: "Build the core flow: start a workout, pick an exercise from GET /exercises, add sets (reps + weight_kg), and save the whole session in one POST /workouts. A Riverpod Notifier holds the in-progress draft as immutable state; the screen watches it and the exercise catalog. Why a client-side draft and a single transactional save. Verified by logging a two-set workout and seeing it persist through the API."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+The heart of FitTrack: the screen where a user **logs a workout**. They start a session, **pick an exercise** from the catalog (`GET /exercises`), **add sets** — each a `reps` count and a `weight_kg` — building up a list, and then **save the whole thing at once** with a single `POST /workouts`, exactly as the [Workouts API →](/fittrack/en/workouts/) expects (the workout and all its sets created in one transaction). The in-progress workout lives in a Riverpod **`Notifier`** as immutable state; the screen watches that draft and the exercise catalog, and calls the [API client →](/fittrack/en/flutter-foundation/api-client/) from the last module to persist it.
+
+By the end a user can open the logging screen, add "Bench Press — 5 reps @ 60 kg", add a second set, and tap **Save** to POST the session; a `201`/`200` with the created workout confirms it landed in Supabase through FastAPI.
+
+## Why
+
+A logged workout is **built up incrementally but saved atomically**. The user adds sets one at a time over a minute or two — but the backend models a workout and its sets as a single unit created in one database transaction (that's why the contract's `POST /workouts` takes the sets *nested in the body*, not a set at a time). So the client's job is to **accumulate a draft locally** and send it as one payload when the user is done. That draft is exactly the kind of shared, evolving state Riverpod is built for: a **`Notifier`** holds the list of sets, exposes intent-named methods (`addSet`, `removeSet`, `clear`), and the screen `ref.watch`es it so the UI always reflects the current draft.
+
+Keeping the draft **immutable** — every mutation replaces the state with a new object rather than editing in place — is what makes Riverpod rebuild reliably: it compares old and new state by identity, so a fresh list triggers a repaint while an in-place `.add()` might not. It also makes the flow predictable and testable: given a draft and an action, the next draft is a pure function of the two.
+
+The exercise catalog comes from the backend, so it's **async state** — a natural `FutureProvider` over `api.listExercises()`. Riverpod hands you loading and error states for free (`AsyncValue`), so the picker shows a spinner while the catalog loads and an error if it doesn't, without any manual `isLoading` bookkeeping. When the user saves, the draft is serialized to the contract's shape and handed to the API client; on success the draft is cleared and the app can move on.
+
+## Pros & cons
+
+**A client-side draft saved with one `POST /workouts`** vs. **POSTing each set as the user adds it**
+
+- **Pros:** matches the backend's transactional model — the workout and its sets succeed or fail together, never a half-saved session; works naturally offline-then-save; and it's fewer round-trips. The user can freely edit or remove sets before committing anything.
+- **Cons:** an unsaved draft lives only in memory, so a crash mid-log loses it (mitigated later with local persistence); and the client must build the exact nested payload the API expects. For a workout that's inherently one session, atomic save is the right model.
+
+**A Riverpod `Notifier` holding immutable draft state** vs. **local `setState` in the logging screen**
+
+- **Pros:** the draft survives navigation (open the exercise picker on another route, come back, sets still there), it's unit-testable without a widget, and immutability makes rebuilds correct and predictable; other widgets (a set counter in the app bar) can watch the same draft.
+- **Cons:** more structure than a single `setState`-driven screen; and you must be disciplined about always replacing state, never mutating it. Because logging spans a picker and a list and must not be lost on navigation, the `Notifier` is worth it.
+
+## Set it up
+
+### 1. Models — `lib/src/features/workouts/models.dart`
+
+Small immutable models matching the API's shapes. `SetInput` mirrors the contract's nested set; `WorkoutDraft.toJson` produces the `POST /workouts` body.
+
+```dart
+// lib/src/features/workouts/models.dart
+/// An exercise from GET /exercises.
+class Exercise {
+  const Exercise({required this.id, required this.name, required this.muscleGroup});
+
+  final String id;
+  final String name;
+  final String muscleGroup;
+
+  factory Exercise.fromJson(Map<String, dynamic> json) => Exercise(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        muscleGroup: json['muscle_group'] as String,
+      );
+}
+
+/// One set in the draft: an exercise plus reps and weight.
+class SetInput {
+  const SetInput({
+    required this.exercise,
+    required this.reps,
+    required this.weightKg,
+  });
+
+  final Exercise exercise;
+  final int reps;
+  final double weightKg;
+}
+
+/// The in-progress workout. Immutable: every change returns a new draft.
+class WorkoutDraft {
+  const WorkoutDraft({this.notes, this.sets = const []});
+
+  final String? notes;
+  final List<SetInput> sets;
+
+  WorkoutDraft copyWith({String? notes, List<SetInput>? sets}) =>
+      WorkoutDraft(notes: notes ?? this.notes, sets: sets ?? this.sets);
+
+  /// Serialize to the POST /workouts body the backend expects: the workout
+  /// with its sets nested, each carrying its 0-based position (set_index).
+  Map<String, dynamic> toJson() => {
+        if (notes != null && notes!.isNotEmpty) 'notes': notes,
+        'sets': [
+          for (final (index, s) in sets.indexed)
+            {
+              'exercise_id': s.exercise.id,
+              'set_index': index,
+              'reps': s.reps,
+              'weight_kg': s.weightKg,
+            },
+        ],
+      };
+}
+```
+
+### 2. The catalog provider — `lib/src/features/workouts/exercises_provider.dart`
+
+```dart
+// lib/src/features/workouts/exercises_provider.dart
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/api/api_providers.dart';
+import 'models.dart';
+
+/// The exercise catalog (public + the user's own), from GET /exercises.
+/// FutureProvider gives loading/error/data states for free.
+final exercisesProvider = FutureProvider<List<Exercise>>((ref) async {
+  final rows = await ref.watch(apiProvider).listExercises();
+  return rows
+      .map((e) => Exercise.fromJson(e as Map<String, dynamic>))
+      .toList();
+});
+```
+
+### 3. The draft notifier — `lib/src/features/workouts/logging_controller.dart`
+
+Holds the draft and the save action. `saveWorkout` serializes and calls the API client, returning the created workout's id on success.
+
+```dart
+// lib/src/features/workouts/logging_controller.dart
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/api/api_providers.dart';
+import 'models.dart';
+
+/// Owns the in-progress workout draft. Every mutation replaces `state`
+/// with a new WorkoutDraft so Riverpod reliably rebuilds watchers.
+class LoggingController extends Notifier<WorkoutDraft> {
+  @override
+  WorkoutDraft build() => const WorkoutDraft();
+
+  void addSet(SetInput set) {
+    state = state.copyWith(sets: [...state.sets, set]);
+  }
+
+  void removeSet(int index) {
+    final next = [...state.sets]..removeAt(index);
+    state = state.copyWith(sets: next);
+  }
+
+  void setNotes(String notes) => state = state.copyWith(notes: notes);
+
+  void clear() => state = const WorkoutDraft();
+
+  /// Persist the draft in one POST /workouts. Returns the new workout id.
+  Future<String> saveWorkout() async {
+    final created = await ref.read(apiProvider).createWorkout(state.toJson());
+    clear();
+    return created['id'] as String;
+  }
+}
+
+final loggingControllerProvider =
+    NotifierProvider<LoggingController, WorkoutDraft>(LoggingController.new);
+```
+
+### 4. The screen — `lib/src/features/workouts/log_workout_screen.dart`
+
+Watches the draft and the catalog. "Add set" opens a small dialog to pick an exercise and enter reps + weight; "Save" commits the whole session.
+
+```dart
+// lib/src/features/workouts/log_workout_screen.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/api/api_exception.dart';
+import 'exercises_provider.dart';
+import 'logging_controller.dart';
+import 'models.dart';
+
+class LogWorkoutScreen extends ConsumerWidget {
+  const LogWorkoutScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final draft = ref.watch(loggingControllerProvider);
+    final controller = ref.read(loggingControllerProvider.notifier);
+
+    Future<void> save() async {
+      try {
+        await controller.saveWorkout();
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('Workout saved')));
+        }
+      } on ApiException catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('Save failed: ${e.message}')));
+        }
+      }
+    }
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Log workout')),
+      body: draft.sets.isEmpty
+          ? const Center(child: Text('No sets yet. Add your first set.'))
+          : ListView.builder(
+              itemCount: draft.sets.length,
+              itemBuilder: (context, i) {
+                final s = draft.sets[i];
+                return ListTile(
+                  title: Text(s.exercise.name),
+                  subtitle: Text('${s.reps} reps × ${s.weightKg} kg'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: () => controller.removeSet(i),
+                  ),
+                );
+              },
+            ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showAddSet(context, ref),
+        icon: const Icon(Icons.add),
+        label: const Text('Add set'),
+      ),
+      bottomNavigationBar: Padding(
+        padding: const EdgeInsets.all(12),
+        child: FilledButton(
+          onPressed: draft.sets.isEmpty ? null : save,
+          child: const Text('Save workout'),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showAddSet(BuildContext context, WidgetRef ref) async {
+    final exercisesAsync = ref.read(exercisesProvider);
+    final exercises = exercisesAsync.valueOrNull ?? const <Exercise>[];
+    if (exercises.isEmpty) return;
+
+    Exercise selected = exercises.first;
+    final repsCtrl = TextEditingController(text: '5');
+    final weightCtrl = TextEditingController(text: '20');
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add set'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            DropdownButtonFormField<Exercise>(
+              initialValue: selected,
+              items: [
+                for (final e in exercises)
+                  DropdownMenuItem(value: e, child: Text(e.name)),
+              ],
+              onChanged: (e) => selected = e ?? selected,
+            ),
+            TextField(
+              controller: repsCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Reps'),
+            ),
+            TextField(
+              controller: weightCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Weight (kg)'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final reps = int.tryParse(repsCtrl.text) ?? 0;
+              final weight = double.tryParse(weightCtrl.text) ?? 0;
+              if (reps > 0 && weight > 0) {
+                ref.read(loggingControllerProvider.notifier).addSet(
+                      SetInput(
+                          exercise: selected, reps: reps, weightKg: weight),
+                    );
+              }
+              Navigator.pop(context);
+            },
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+```
+
+### 5. Route to it — update `lib/src/router.dart`
+
+Add a `/log` route and a button on the home screen to reach it:
+
+```dart
+// lib/src/router.dart — inside routes: [ ... ]
+GoRoute(
+  path: '/log',
+  name: 'log',
+  builder: (context, state) => const LogWorkoutScreen(),
+),
+```
+
+```dart
+// lib/src/features/workouts/home_screen.dart — in the body
+FilledButton.icon(
+  onPressed: () => context.go('/log'),
+  icon: const Icon(Icons.add),
+  label: const Text('Log a workout'),
+),
+```
+
+## Verify
+
+With the backend running and at least one exercise in the catalog (seed one via `POST /exercises`, or the [Exercises API](/fittrack/en/exercises/) module's seed), analyze and run:
+
+```bash
+flutter analyze
+flutter run \
+  --dart-define=SUPABASE_URL=https://your-project-ref.supabase.co \
+  --dart-define=SUPABASE_ANON_KEY=your-anon-key \
+  --dart-define=API_BASE_URL=http://10.0.2.2:8000
+```
+
+Sign in, tap **Log a workout**, then **Add set**: pick an exercise, enter `5` reps and `60` kg, **Add**. Repeat for a second set. The list shows both. Tap **Save workout** — the snackbar reads **Workout saved**, and the draft clears. Confirm it really persisted by asking the backend for the history the save just created:
+
+```bash
+curl -s localhost:8000/workouts \
+  -H "Authorization: Bearer <your-jwt>" | jq '.[0].sets | length'
+```
+
+```txt
+2
+```
+
+Two sets on the most recent workout means the whole draft serialized and saved in one transaction. Keep the guard green:
+
+```bash
+flutter test
+```
+
+```txt
+00:02 +1: All tests passed!
+```
+
+Check your understanding:
+
+- Why does the app accumulate a draft and send one `POST /workouts` instead of POSTing each set as it's added? What backend guarantee does that align with?
+- `LoggingController.addSet` builds a new list with `[...state.sets, set]` rather than calling `state.sets.add(set)`. Why does immutability matter for Riverpod to rebuild the screen?
+- `WorkoutDraft.toJson` assigns `set_index` from the list position. Where does that index come from in the code, and why does the backend want it?
+- The catalog is an `exercisesProvider` (a `FutureProvider`). What two UI states does that give you for free that a manual fetch would make you track by hand?
+
+## Recap
+
+The logging screen is FitTrack's core flow: a Riverpod **`Notifier`** (`LoggingController`) holds an **immutable `WorkoutDraft`**, the user adds sets (exercise + `reps` + `weight_kg`) drawn from an `exercisesProvider` fed by `GET /exercises`, and **Save** serializes the draft to the contract's nested body and sends one **`POST /workouts`** through the [API client](/fittrack/en/flutter-foundation/api-client/) — the workout and all its sets committed in a single backend transaction. Immutable state keeps rebuilds correct, and `ApiException` surfaces save failures to the user. Next, [History and progress →](/fittrack/en/flutter-tracking/history-and-progress/) reads the sessions back with `GET /workouts` and visualizes trends from the `GET /progress/*` endpoints.
