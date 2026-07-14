@@ -1,0 +1,51 @@
+---
+title: Real-World Projects Roadmap
+description: "FitTrack is project #4 of a six-project series that adapts the whole Learn Hub catalog into real applications. Here's where it fits and what's around it."
+sidebar:
+  order: 4
+---
+
+## Where FitTrack fits
+
+FitTrack is **project #4** of a six-project **Real-World Projects** series. Each project takes a different real application and rebuilds it from an empty repo, deliberately drawing on a different slice of the Learn Hub courses — so that, taken together, the six cover almost the entire catalog. Three projects are **complete and live** today; FitTrack is the one you're building now; and two more follow to finish the map across the offline web and real cloud infrastructure.
+
+## TaskFlow — realtime Kanban board ✅ live
+
+A Trello-style board where every change shows up live for everyone viewing it. A Rust backend, Redis for cache and fan-out, and an Astro frontend, brought up by Docker Compose.
+
+- **Stack:** Rust/Axum + PostgreSQL + Redis + WebSocket + Astro + Docker
+
+## DevBlog — headless CMS + blog ✅ live
+
+A content platform: authors write in a headless CMS, and a fast public blog renders it over a **GraphQL** API with SSR and ISR.
+
+- **Stack:** Node/NestJS + MongoDB + GraphQL + Next.js
+
+## ShopMicro — e-commerce microservices ✅ live
+
+An online store split into independent services that talk over **gRPC** and coordinate an order flow through **event streaming** — Kafka, RabbitMQ, a saga and the outbox pattern, on Kubernetes via Helm.
+
+- **Stack:** Go + gRPC + PostgreSQL + Kafka + RabbitMQ + Kubernetes
+
+## FitTrack — mobile-first fitness app ← you are here
+
+A workout tracker with a native mobile app and a web companion, backed by a Python API and a managed Postgres/auth platform. You build the same product for two clients and share one backend.
+
+- **Stack:** Python/FastAPI + Supabase + Flutter + Svelte
+- **Adapts:** Python Deep Dive, Python for TypeScript Developers, Supabase, Flutter (×2), Svelte
+
+## OfflineNotes — offline-first PWA
+
+A local-first notes app that works offline and syncs when it's back online — IndexedDB, Web Components, and a WASM core.
+
+- **Stack:** TypeScript + Web Components + IndexedDB + WASM + Astro
+
+## CloudDeploy — infrastructure capstone
+
+Take the first five projects and deploy them for real: infrastructure as code across clouds, Kubernetes, observability, identity, and feature flags.
+
+- **Stack:** Terraform/Terragrunt (AWS/GCP/Azure) + Kubernetes + Datadog + Keycloak + GrowthBook
+
+## Verify
+
+You're oriented when you can say, in a sentence each, what FitTrack builds, which slice of the catalog it adapts, and how it differs from the three projects before it. Next, start [Module 1 · Setup & Tooling](/fittrack/en/setup/).

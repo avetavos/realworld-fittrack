@@ -1,0 +1,67 @@
+---
+title: FitTrack
+description: A hands-on, bilingual course where you build FitTrack, a mobile-first workout tracker — a Python/FastAPI backend on Supabase (managed Postgres + Auth), a Flutter mobile app, and a Svelte web companion, two clients sharing one API.
+template: splash
+hero:
+  tagline: Build FitTrack, a mobile-first workout tracker. One Python/FastAPI backend on Supabase (managed Postgres + Auth), a Flutter mobile app, and a Svelte web companion — two clients sharing one JWT-secured API.
+  actions:
+    - text: Start here
+      link: /fittrack/en/introduction/
+      icon: right-arrow
+      variant: primary
+    - text: See the architecture
+      link: /fittrack/en/introduction/architecture/
+      icon: rocket
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What you'll build
+
+<CardGrid>
+  <Card title="Introduction" icon="open-book">
+    Why FitTrack, how the course is structured, and what you'll have built by the end. [Open →](/fittrack/en/introduction/)
+  </Card>
+  <Card title="Setup & Tooling" icon="setting">
+    Install Python (uv), the Supabase CLI, Flutter, and Node, and lay out the project. [Open →](/fittrack/en/setup/)
+  </Card>
+  <Card title="Supabase Foundation" icon="seti:db">
+    Provision Supabase, model the Postgres schema and migrations, and turn on Auth. [Open →](/fittrack/en/supabase/)
+  </Card>
+  <Card title="FastAPI Foundation" icon="rocket">
+    Stand up the async FastAPI app, config, structure, and a connection to Supabase Postgres. [Open →](/fittrack/en/fastapi/)
+  </Card>
+  <Card title="Auth (Supabase JWT)" icon="approve-check">
+    Verify the Supabase-issued JWT in FastAPI and build a `get_current_user` dependency. [Open →](/fittrack/en/auth/)
+  </Card>
+  <Card title="Domain Model" icon="list-format">
+    Model exercises, workouts, and sets with Pydantic, SQLAlchemy, and repositories. [Open →](/fittrack/en/domain/)
+  </Card>
+  <Card title="Exercises API" icon="list-format">
+    Build the exercise-catalog CRUD, shared and user-created. [Open →](/fittrack/en/exercises/)
+  </Card>
+  <Card title="Workouts API" icon="pencil">
+    Log workout sessions and their sets, and read back history. [Open →](/fittrack/en/workouts/)
+  </Card>
+  <Card title="Progress & Stats" icon="bars">
+    Aggregate personal records, volume over time, and per-exercise trends. [Open →](/fittrack/en/progress/)
+  </Card>
+  <Card title="Flutter — Foundation" icon="phone">
+    Set up the Flutter app with Riverpod, Supabase auth, and an API client. [Open →](/fittrack/en/flutter-foundation/)
+  </Card>
+  <Card title="Flutter — Tracking" icon="phone">
+    Build the mobile tracking UI: start a workout, log sets, view history. [Open →](/fittrack/en/flutter-tracking/)
+  </Card>
+  <Card title="Svelte Web Companion" icon="laptop">
+    Ship a SvelteKit dashboard that reads the same API. [Open →](/fittrack/en/svelte-companion/)
+  </Card>
+  <Card title="Testing" icon="approve-check-circle">
+    Cover the backend with pytest and the Flutter app with widget tests. [Open →](/fittrack/en/testing/)
+  </Card>
+  <Card title="Deployment" icon="cloud-download">
+    Containerize the API, run on hosted Supabase, and ship both clients. [Open →](/fittrack/en/deployment/)
+  </Card>
+  <Card title="Wrap-up" icon="star">
+    Review what you built, the trade-offs, and where to take FitTrack next. [Open →](/fittrack/en/wrap-up/)
+  </Card>
+</CardGrid>

@@ -1,0 +1,67 @@
+---
+title: FitTrack
+description: คอร์สสองภาษาแบบลงมือทำจริง ที่คุณจะสร้าง FitTrack แอปบันทึกการออกกำลังกายแบบ mobile-first — backend เขียนด้วย Python/FastAPI บน Supabase (managed Postgres + Auth), แอป mobile บน Flutter, และ web companion บน Svelte สอง client แชร์ API เดียวกัน
+template: splash
+hero:
+  tagline: สร้าง FitTrack แอปบันทึกการออกกำลังกายแบบ mobile-first ด้วย backend Python/FastAPI หนึ่งตัวบน Supabase (managed Postgres + Auth), แอป mobile บน Flutter, และ web companion บน Svelte — สอง client แชร์ API เดียวกันที่ป้องกันด้วย JWT
+  actions:
+    - text: เริ่มที่นี่
+      link: /fittrack/th/introduction/
+      icon: right-arrow
+      variant: primary
+    - text: ดู architecture
+      link: /fittrack/th/introduction/architecture/
+      icon: rocket
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What you'll build
+
+<CardGrid>
+  <Card title="Introduction" icon="open-book">
+    ทำไมต้อง FitTrack, คอร์สนี้จัดโครงสร้างยังไง และเมื่อจบแล้วคุณจะได้สร้างอะไรบ้าง [Open →](/fittrack/th/introduction/)
+  </Card>
+  <Card title="Setup & Tooling" icon="setting">
+    ติดตั้ง Python (uv), Supabase CLI, Flutter และ Node แล้ววางโครงสร้างโปรเจกต์ [Open →](/fittrack/th/setup/)
+  </Card>
+  <Card title="Supabase Foundation" icon="seti:db">
+    provision Supabase, ออกแบบ schema และ migration ของ Postgres แล้วเปิด Auth [Open →](/fittrack/th/supabase/)
+  </Card>
+  <Card title="FastAPI Foundation" icon="rocket">
+    สร้างแอป FastAPI แบบ async, config, โครงสร้าง และเชื่อมต่อไปยัง Supabase Postgres [Open →](/fittrack/th/fastapi/)
+  </Card>
+  <Card title="Auth (Supabase JWT)" icon="approve-check">
+    verify JWT ที่ Supabase ออกให้ใน FastAPI แล้วสร้าง dependency `get_current_user` [Open →](/fittrack/th/auth/)
+  </Card>
+  <Card title="Domain Model" icon="list-format">
+    ออกแบบ exercise, workout และ set ด้วย Pydantic, SQLAlchemy และ repository [Open →](/fittrack/th/domain/)
+  </Card>
+  <Card title="Exercises API" icon="list-format">
+    สร้าง CRUD ของ exercise catalog ทั้งแบบ shared และที่ user สร้างเอง [Open →](/fittrack/th/exercises/)
+  </Card>
+  <Card title="Workouts API" icon="pencil">
+    บันทึก workout session พร้อม set ของมัน แล้วอ่าน history กลับมา [Open →](/fittrack/th/workouts/)
+  </Card>
+  <Card title="Progress & Stats" icon="bars">
+    รวมค่า personal record, volume ตามช่วงเวลา และ trend ของแต่ละ exercise [Open →](/fittrack/th/progress/)
+  </Card>
+  <Card title="Flutter — Foundation" icon="phone">
+    ตั้งค่าแอป Flutter ด้วย Riverpod, Supabase auth และ API client [Open →](/fittrack/th/flutter-foundation/)
+  </Card>
+  <Card title="Flutter — Tracking" icon="phone">
+    สร้าง UI สำหรับ tracking บน mobile: เริ่ม workout, บันทึก set, ดู history [Open →](/fittrack/th/flutter-tracking/)
+  </Card>
+  <Card title="Svelte Web Companion" icon="laptop">
+    ส่ง dashboard บน SvelteKit ที่อ่าน API เดียวกัน [Open →](/fittrack/th/svelte-companion/)
+  </Card>
+  <Card title="Testing" icon="approve-check-circle">
+    เขียน test ครอบ backend ด้วย pytest และแอป Flutter ด้วย widget test [Open →](/fittrack/th/testing/)
+  </Card>
+  <Card title="Deployment" icon="cloud-download">
+    containerize API, รันบน Supabase ที่ hosted แล้ว ship ทั้งสอง client [Open →](/fittrack/th/deployment/)
+  </Card>
+  <Card title="Wrap-up" icon="star">
+    ทบทวนสิ่งที่สร้าง, trade-off ต่าง ๆ และจะพา FitTrack ไปต่อทางไหน [Open →](/fittrack/th/wrap-up/)
+  </Card>
+</CardGrid>

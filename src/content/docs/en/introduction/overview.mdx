@@ -1,0 +1,51 @@
+---
+title: Overview
+description: "What FitTrack is, the feature list, and the map from each build module to the Learn Hub course it adapts."
+sidebar:
+  order: 1
+---
+
+## What FitTrack is
+
+FitTrack is a **workout tracker**. A user signs in, logs a workout as a series of **sets** — each set is an exercise plus reps and weight — and watches their progress build up over time: personal records, total volume per week, and how each exercise trends. It's deliberately focused: an **exercise catalog**, **workout logging**, and **progress**. No social feed, no training programs, no nutrition — those live in [where to go next](/fittrack/en/wrap-up/).
+
+The point of the project isn't the fitness domain — it's **building one product for two clients on one shared backend**. You write a single **FastAPI** service, back it with **Supabase** (managed Postgres and Auth), and consume it from both a **Flutter** mobile app (the primary, mobile-first experience) and a **Svelte** web companion (a lighter dashboard). The same API, two very different front ends.
+
+## The feature set
+
+- **Auth** — sign up and sign in via Supabase Auth; every API call is authenticated with the Supabase-issued JWT.
+- **Exercise catalog** — a shared library of exercises, plus user-created ones.
+- **Workout logging** — start a session, add sets (exercise, reps, weight), finish it.
+- **History** — browse past workouts.
+- **Progress & stats** — personal records, weekly volume, per-exercise trends, computed server-side.
+- **Two clients** — a Flutter mobile app and a Svelte web companion, both on the same FastAPI backend.
+
+## The course map
+
+Each build module adapts a Learn Hub course to one slice of FitTrack.
+
+| Module | What you build | Learn Hub course it adapts |
+| --- | --- | --- |
+| 1 · Setup & Tooling | The Python toolchain (uv), the FastAPI project, and a Supabase project | Python |
+| 2 · Supabase Foundation | The Postgres schema, migrations, and Auth, on managed Supabase | Supabase |
+| 3 · FastAPI Foundation | The async FastAPI app, config, structure, and DB access | Python / Python for TS Devs |
+| 4 · Auth (Supabase JWT) | Verifying the Supabase JWT and a `get_current_user` dependency | Supabase / Python |
+| 5 · Domain Model | Exercises, workouts, and sets as Pydantic + SQLAlchemy + repositories | Python |
+| 6 · Exercises API | The exercise-catalog CRUD, shared and user-created | Python / REST |
+| 7 · Workouts API | Logging workout sessions and their sets, and reading history | Python |
+| 8 · Progress & Stats | Personal records, volume, and per-exercise aggregations | Python / SQL |
+| 9 · Flutter — Foundation | The Flutter app: Riverpod, Supabase auth, an API client | Flutter |
+| 10 · Flutter — Tracking | The mobile tracking UI: log sets, view history | Flutter |
+| 11 · Svelte Web Companion | A SvelteKit dashboard reading the same API | Svelte |
+| 12 · Testing | pytest for the backend, widget tests for Flutter | Python |
+| 13 · Deployment | Containerize the API, hosted Supabase, ship both clients | Docker |
+
+## Verify
+
+You're ready to move on when you can answer these in your own words:
+
+- Why does FitTrack put a FastAPI backend in front of Supabase instead of having the clients talk to Supabase directly?
+- What does each of the two clients — Flutter and Svelte — do, and what do they share?
+- Which three features make up FitTrack's core, and which ideas were deliberately left out?
+
+Next, the [architecture](/fittrack/en/introduction/architecture/) shows how the pieces fit together.
