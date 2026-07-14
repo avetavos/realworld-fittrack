@@ -1,0 +1,167 @@
+---
+title: The app and its config
+description: "ให้ FastAPI app มี configuration ที่ typed และ validate แล้ว: app/config.py ที่มี Settings(BaseSettings) จาก pydantic-settings อ่าน .env ที่ root ร่วมกัน expose เป็น settings singleton ตัวเดียว ทำไม typed settings ถึงดีกว่า os.getenv ที่กระจายทั่วโค้ด ทำไมต้อง instance เดียวระดับ module และทำไม config ที่ fail fast ตอน startup ปลอดภัยกว่า var ที่หายไปแล้วเจอกลาง request ตรวจสอบด้วยการ import settings ดูค่า required ที่หายไป raise error ชัด ๆ แล้วรัน app"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+configuration สำหรับ project `api/` — ชั้นที่เปลี่ยน environment variable จาก [The repo layout →](/fittrack/th/setup/repo-layout/) ให้เป็นค่า typed ที่โค้ดใช้ได้ ตอนนี้ `app/main.py` (จาก [The Python toolchain →](/fittrack/th/setup/python-toolchain/)) เป็น app เปล่า ๆ ที่มี `/health` endpoint และไม่รู้ว่า database อยู่ไหนหรือ secret อะไร verify token บทนี้เพิ่ม **`app/config.py`**: class `Settings` ที่สร้างบน **pydantic-settings** ซึ่งอ่าน `.env` ที่ root ร่วมกัน validate ทุกค่า และ expose เป็น `settings` object ตัวเดียวระดับ module ที่ backend ที่เหลือ import
+
+คุณเพิ่ม dependency `pydantic-settings` เขียน class `Settings` ต่อสายมันเข้า `app/main.py` แล้วยืนยันว่าค่า required ที่หายไปถูกจับตอน import — ไม่ใช่ลึกเข้าไปสาม request ใน production ยังไม่มี database connection ตอนนี้; นั่นคือสิ่งถัดไปเลยที่ [Async database access →](/fittrack/th/fastapi/async-database/) สร้างต่อยอดบน `settings.database_url`
+
+## Why
+
+backend ที่ไม่ trivial ทุกตัวต้องการข้อมูลชุดเดียวกันจาก environment: database อยู่ไหน, ใช้ secret อะไร verify token, bind ที่ host และ port ไหน วิธี naive คือ `os.getenv("DATABASE_URL")` ทุกที่ที่คุณบังเอิญต้องใช้ นั่นกระจาย string key ไปทั่ว codebase, return `None` (หรือ string ดิบ) โดยไม่ validate, พิมพ์ผิดกลายเป็น `None` เงียบ ๆ และคุณเจอ variable ที่หายไปตอน code path ที่อ่านมันได้รันจริงเท่านั้น — บ่อยครั้งใน production
+
+**pydantic-settings** แทนที่ทั้งหมดนั้นด้วย **settings object ที่ typed และ validate แล้ว** คุณประกาศ field ที่คาดหวังและ type ของมัน; pydantic-settings อ่านมันจาก environment (และไฟล์ `.env`), coerce เป็น type ที่ถูกต้อง และ — สำคัญที่สุด — **raise error ชัด ๆ ตอน construct ถ้าค่า required หายไปหรือผิดรูป** `api_port` เป็น `int` ดังนั้น `"8000"` จาก environment กลายเป็น integer `8000`; ถ้า `DATABASE_URL` หายไป คุณได้ `ValidationError` ที่ระบุตรง ๆ ว่าอะไรหาย ตอน startup ก่อน app จะ serve request สักตัว configuration กลายเป็น contract ที่ documented และ validate แล้ว แทนที่จะเป็นการกระจายของ `os.getenv`
+
+มีจุด design เฉพาะสำหรับ FitTrack สองจุด หนึ่ง app อ่าน **`.env` ที่ root ตัวเดียว** จาก [The repo layout →](/fittrack/th/setup/repo-layout/) — ไฟล์เดียวที่ document ทุกค่าที่ทั้ง project ต้องการ — แทนที่จะประดิษฐ์ `.env` ตัวที่สองภายใน `api/` เพราะ backend รันจาก directory `api/` ไฟล์นั้นอยู่สูงขึ้นไปหนึ่งระดับ ที่ `../.env` สอง `Settings` ถูก instantiate **ครั้งเดียว** เป็น `settings = Settings()` ระดับ module แล้ว import ทุกที่ การอ่านและ validate environment เป็นงานที่คุณอยากทำครั้งเดียวเป๊ะตอน startup ไม่ใช่ต่อ request; instance เดียวที่แชร์กันยังหมายถึงทั้ง app เห็น configuration เดียวกันแบบ consistent
+
+## Pros & cons
+
+**`Settings` แบบ typed ของ pydantic-settings** เทียบกับ **`os.getenv` ที่กระจายทั่วโค้ด**
+
+- **Pros:** ทุกค่าถูกประกาศครั้งเดียวพร้อม type และ validate ตอน load — field ที่เป็น `int` เป็น int จริง, ค่า required ที่หายไปเป็น error ชัด ๆ ตอน startup, และ list เต็มของสิ่งที่ app ต้องการเป็น class เดียวที่อ่านได้; editor autocomplete `settings.database_url` และจับ typo ที่ `os.getenv("DATBASE_URL")` ไม่มีวันจับได้
+- **Cons:** มันเป็นอีก dependency และมี ceremony เล็กน้อยเทียบกับ `os.getenv` เปล่า ๆ และ validation model ของ pydantic เป็นอีกเรื่องที่ต้องเรียน สำหรับอะไรที่เกินกว่า script ใช้แล้วทิ้ง การ validate และ single source of truth คุ้มค่าตัวเองทันที
+
+**`settings` singleton ตัวเดียวระดับ module** เทียบกับ **construct `Settings()` ทุกที่ที่ต้องใช้ config**
+
+- **Pros:** environment ถูกอ่านและ validate ครั้งเดียวเป๊ะตอน import ดังนั้น startup fail fast และทุก module แชร์ configuration เดียวกันแบบ consistent; import ยังคง trivial (`from app.config import settings`)
+- **Cons:** instance ระดับ module รันตอน import time ซึ่งทำให้ test setup บางแบบอยาก override ค่า (pydantic-settings รองรับการ construct `Settings(...)` ใหม่พร้อม override เพื่อการนี้พอดี); และ singleton จริง ๆ เป็น global state ซึ่งคุณคุมวินัยด้วยการไม่ mutate มันเลย ความ simple ชนะสำหรับ app ขนาดนี้
+
+## Set it up
+
+### 1. Add the dependency
+
+จาก `api/`:
+
+```bash
+uv add pydantic-settings
+```
+
+คำสั่งนี้เพิ่ม `pydantic-settings` ลง `pyproject.toml` และติดตั้งมัน (Pydantic v2 เองมาด้วยในฐานะ dependency ของมัน)
+
+### 2. `app/config.py`
+
+```python
+# app/config.py — typed, validated application configuration.
+# Reads the shared root .env and the process environment, exposed as a
+# single `settings` instance the rest of the app imports.
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """All configuration FitTrack's backend needs, validated at startup.
+
+    Field names are lower_snake_case; pydantic-settings matches them to
+    environment variables case-insensitively (DATABASE_URL -> database_url).
+    """
+
+    # Supabase — the backend verifies tokens with the JWT secret and
+    # connects to Postgres with the database URL. See the Supabase project
+    # setup lesson for where each value comes from.
+    database_url: str
+    supabase_url: str
+    supabase_anon_key: str
+    supabase_jwt_secret: str
+
+    # API server bind address. Sensible defaults; overridable via env.
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+
+    model_config = SettingsConfigDict(
+        # The shared .env lives at the repo root; the app runs from api/.
+        env_file="../.env",
+        env_file_encoding="utf-8",
+        # Ignore any env vars we don't model rather than erroring on them.
+        extra="ignore",
+    )
+
+
+# Instantiate once at import. Reads and validates the environment here, so
+# a missing or malformed value fails loudly at startup, not mid-request.
+settings = Settings()
+```
+
+field required สามตัวไม่มี default ดังนั้นถ้าตัวไหนหายไป การเรียก `Settings()` จะ raise `ValidationError` ที่ระบุมัน `api_host`/`api_port` มี default จึงเป็น optional ใน deployment จริงค่ามาจาก environment variable จริง ๆ (ไม่มีไฟล์ `.env` ใน container) — `env_file` เป็นความสะดวกตอน development; pydantic-settings อ่าน process environment อยู่แล้วไม่ว่าทางไหน
+
+### 3. Wire it into `app/main.py`
+
+```python
+# app/main.py — creates the FastAPI application and imports the validated
+# settings so the app fails fast if configuration is missing.
+from fastapi import FastAPI
+
+from app.config import settings
+
+app = FastAPI(title="FitTrack API")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Liveness check — no auth, no database, just proof the app is up."""
+    return {"status": "ok"}
+
+
+@app.get("/config-check")
+def config_check() -> dict[str, str | int]:
+    """Non-secret confirmation that config loaded. Never expose secrets here."""
+    return {"supabase_url": settings.supabase_url, "api_port": settings.api_port}
+```
+
+การ import `app.config` คือสิ่งที่บังคับให้ `Settings()` รันตอน startup — ดังนั้น app ที่ config ผิดจะปฏิเสธการ start แทนที่จะล้มทีหลัง route `/config-check` echo เฉพาะค่า *non-secret* (ไม่เคย JWT secret หรือ database URL); มันมีอยู่แค่เพื่อพิสูจน์ว่า config ต่อสายแล้ว และคุณจะลบมันออกเมื่อ route จริงมาถึง
+
+## Verify
+
+ก่อนอื่น พิสูจน์ว่า settings load และเป็น typed จาก `api/` โดยมี `.env` ที่ root กรอกจาก [The Supabase project →](/fittrack/th/setup/supabase-project/):
+
+```bash
+uv run python -c "from app.config import settings; print(settings.api_port, type(settings.api_port))"
+```
+
+```txt
+8000 <class 'int'>
+```
+
+`8000` พิมพ์ออกมาเป็น `int` จริง (ไม่ใช่ string `"8000"`) คือ pydantic-settings coerce ค่า ตอนนี้พิสูจน์ว่า config **fail fast** เมื่อบางอย่างที่ required หายไป — ล้างค่า database URL ชั่วคราว:
+
+```bash
+uv run python -c "import os; os.environ.pop('DATABASE_URL', None)" \
+  && DATABASE_URL= uv run python -c "from app.config import settings"
+```
+
+```txt
+pydantic_core._pydantic_core.ValidationError: 1 validation error for Settings
+database_url
+  Field required [type=missing, ...]
+```
+
+error ชัด ๆ ตอน import ที่ระบุ field ที่หายไป — คือการล้มเหลวที่คุณต้องการตอน startup พอดี แทนที่จะเป็นกลาง request สุดท้าย รัน app แล้วยืนยันทั้งสอง endpoint:
+
+```bash
+uv run fastapi dev app/main.py
+```
+
+```bash
+curl -s localhost:8000/health && echo && curl -s localhost:8000/config-check
+```
+
+```json
+{"status":"ok"}
+{"supabase_url":"http://127.0.0.1:54321","api_port":8000}
+```
+
+app start (พิสูจน์ว่า config validate แล้ว) และรายงาน configuration ที่ non-secret หยุด server ด้วย `Ctrl-C`
+
+ตรวจสอบความเข้าใจ:
+
+- pydantic-settings ทำอะไรที่ `os.getenv("DATABASE_URL")` ไม่ทำ — บอกสองอย่าง — และแต่ละอย่างจับปัญหาเมื่อไหร่?
+- ทำไม `settings` ถึงถูกสร้างครั้งเดียวระดับ module แทนที่จะเรียก `Settings()` ภายในทุก function ที่ต้องการค่า?
+- app อ่าน `../.env` ทำไมต้องขึ้นไปหนึ่งระดับ และทำไม `env_file` ถึงเป็นแค่ความสะดวกตอน development ไม่ใช่วิธีที่ production ได้ config ของมัน?
+- `/config-check` return `supabase_url` และ `api_port` แต่ไม่เคย `supabase_jwt_secret` ทำไม endpoint นั้นต้องไม่ echo secret เด็ดขาด?
+
+## Recap
+
+backend ตอนนี้มี **configuration ที่ typed และ validate แล้ว** `app/config.py` define `Settings(BaseSettings)` จาก **pydantic-settings** ที่อ่าน `.env` ที่ root ร่วมกัน (ที่ `../.env` เพราะ app รันจาก `api/`) บวก process environment, ประกาศแต่ละค่าพร้อม type, และ expose เป็น **`settings`** instance ตัวเดียวระดับ module ที่ import ทั่ว app เพราะ `Settings()` รันตอน import ค่า required ที่หายไปหรือผิดรูป — `database_url`, `supabase_url`, `supabase_anon_key`, `supabase_jwt_secret` — raise `ValidationError` ชัด ๆ ตอน **startup** ไม่ใช่กลาง request ส่วน `api_host`/`api_port` fall back เป็น default คุณต่อสาย `settings` เข้า `app/main.py`, ยืนยันว่าค่า load ด้วย type ที่ถูกต้อง, ดู field ที่หายไปล้มดัง ๆ, และรัน app เมื่อมี configuration อยู่ในมือ backend ก็เอื้อมถึง database ได้แล้ว: ต่อไป [Async database access →](/fittrack/th/fastapi/async-database/) ใช้ `settings.database_url` สร้าง async SQLAlchemy engine, session factory, และ dependency `get_session` แล้วพิสูจน์การเชื่อมต่อด้วย health check ที่ backed ด้วย database

@@ -1,0 +1,162 @@
+---
+title: Async database access
+description: "Connect FastAPI to Supabase Postgres asynchronously: an app/db.py with create_async_engine over asyncpg, an async_sessionmaker, and a get_session dependency that yields one session per request. Then a DB-backed /health/db that runs select 1 to prove the connection is live. Why async all the way down for an I/O-bound API, why one session per request instead of a shared global, and why expire_on_commit=False. Verified by hitting /health/db against the running local Supabase."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+The database layer: **`app/db.py`**, which turns `settings.database_url` from [The app and its config →](/fittrack/en/fastapi/app-and-config/) into a working, asynchronous connection to the Supabase Postgres you stood up in [The Supabase project →](/fittrack/en/setup/supabase-project/).
+
+Three pieces, and then a proof:
+
+1. **`engine`** — an async SQLAlchemy engine over the **asyncpg** driver, the pool that owns connections to Postgres.
+2. **`SessionLocal`** — an `async_sessionmaker`, the factory that hands out sessions.
+3. **`get_session`** — a FastAPI dependency that yields **one session per request** and cleans it up afterward.
+
+Then a **database-backed health check**, `GET /health/db`, that runs `select 1` through a real session — so you're not just wiring plumbing, you're proving water flows through it. Every later module — models, repositories, every router — depends on `get_session`; this lesson is the foundation they all sit on. After it, [Auth (Supabase JWT) →](/fittrack/en/auth/) adds the other half of a request: verifying who's calling.
+
+## Why
+
+FastAPI is an **async** framework, and FitTrack's backend is **I/O-bound** — its work is waiting on the database, not burning CPU. That's exactly the workload async is built for. When a request is waiting on a Postgres query, an async event loop can serve other requests on the same worker instead of blocking a thread. To get that benefit the database access has to be async *all the way down*, which is why `DATABASE_URL` uses the `postgresql+asyncpg://` scheme (the question [The Supabase project →](/fittrack/en/setup/supabase-project/) left hanging): **asyncpg** is a fully async Postgres driver, and `create_async_engine` builds a non-blocking engine on top of it. A sync driver like psycopg2 would block the event loop on every query and throw the whole model away.
+
+The **engine** is created once and holds a connection pool — opening a Postgres connection is expensive, so the pool keeps a handful open and hands them out. You never share the engine's connections directly; instead `async_sessionmaker` produces a **session** — the unit of work that runs queries and manages a transaction.
+
+The key discipline is **one session per request**. A session is not thread-safe or task-safe and it carries transaction state, so a single global session shared across concurrent requests would interleave their queries and corrupt each other's transactions. Instead, `get_session` is a dependency that opens a fresh session when a request starts, `yield`s it to the endpoint, and closes it when the request ends — an isolated unit of work per request, connection returned to the pool afterward. FastAPI's `Depends` makes this automatic: an endpoint just declares `session: AsyncSession = Depends(get_session)` and gets a clean session, no manual open/close.
+
+One more setting: `expire_on_commit=False`. By default SQLAlchemy expires objects after a commit, so touching an attribute afterward triggers a *fresh* database load — which, in async code, means an unexpected `await` (and an error if you've already left the session's scope). Turning it off lets you read an object's attributes after commit without a surprise round-trip, which is what you want when returning a just-saved row from an endpoint.
+
+## Pros & cons
+
+**Async engine (`create_async_engine` + asyncpg)** vs. **a synchronous engine (psycopg2)**
+
+- **Pros:** matches FastAPI's async model, so a worker waiting on a query can serve other requests instead of blocking a thread — real concurrency for an I/O-bound API from a single process; asyncpg is also among the fastest Postgres drivers.
+- **Cons:** async is more demanding to write and reason about — every DB call must be `await`ed, sessions are async context managers, and a stray blocking call anywhere silently stalls the event loop; the ecosystem of async-compatible libraries is smaller than the sync one. For a database-bound FastAPI service the concurrency is the whole point, so async is the right default.
+
+**One session per request (via `get_session`)** vs. **a single shared session for the whole app**
+
+- **Pros:** each request gets an isolated transaction, so concurrent requests can't corrupt each other's state; the session is opened and closed around exactly one request, and its connection returns to the pool promptly; it's the pattern every FastAPI + SQLAlchemy guide converges on.
+- **Cons:** it's a little more machinery than reaching for one module-level session, and a new session per request means relying on the connection *pool* to keep that cheap (which it does). A shared session looks simpler but is unsafe the moment two requests overlap — a non-starter for a real API.
+
+## Set it up
+
+### 1. Add the dependencies
+
+From `api/`:
+
+```bash
+uv add "sqlalchemy[asyncio]" asyncpg
+```
+
+`sqlalchemy[asyncio]` pulls in SQLAlchemy 2.0 with its async extension; `asyncpg` is the async Postgres driver the `postgresql+asyncpg://` URL names.
+
+### 2. `app/db.py`
+
+```python
+# app/db.py — asynchronous database access: one engine (a connection pool),
+# a session factory, and a per-request session dependency.
+from collections.abc import AsyncIterator
+
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+from app.config import settings
+
+# The engine owns the connection pool. Created once for the whole app.
+# The postgresql+asyncpg:// scheme in DATABASE_URL selects the async driver.
+engine = create_async_engine(settings.database_url, echo=False)
+
+# The session factory. expire_on_commit=False keeps attributes readable
+# after commit without triggering a fresh (awaitable) load — important in
+# async code and when returning a just-saved row from an endpoint.
+SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def get_session() -> AsyncIterator[AsyncSession]:
+    """FastAPI dependency: yield one session per request, then close it.
+
+    The async context manager opens a session for the life of the request
+    and guarantees it's closed (and its connection returned to the pool)
+    afterward, even if the endpoint raises.
+    """
+    async with SessionLocal() as session:
+        yield session
+```
+
+That's the whole database layer: an engine, a factory, and a dependency. Notice `get_session` doesn't `commit` — it yields a clean session and closes it; individual endpoints and repositories decide when to commit, so read-only routes never open a needless write transaction.
+
+### 3. A database-backed health check in `app/main.py`
+
+The `/health` from earlier proves the *app* is up. Add one that proves the *database* is reachable:
+
+```python
+# app/main.py — add an async, DB-backed health check alongside the others.
+from fastapi import Depends, FastAPI
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.db import get_session
+
+app = FastAPI(title="FitTrack API")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Liveness check — no auth, no database, just proof the app is up."""
+    return {"status": "ok"}
+
+
+@app.get("/health/db")
+async def health_db(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
+    """Readiness check — runs a trivial query to prove Postgres is reachable."""
+    await session.execute(text("select 1"))
+    return {"status": "ok", "database": "reachable"}
+```
+
+`health_db` is `async` and declares `session: AsyncSession = Depends(get_session)` — FastAPI runs the dependency, hands the endpoint a live session, and closes it when the response is sent. `text("select 1")` is the smallest possible query; `await session.execute(...)` succeeding means the URL, driver, pool, and Postgres are all working end to end.
+
+## Verify
+
+Make sure the local Supabase stack is running (`supabase status` — start it with `supabase start` if not), since this endpoint actually connects. Then run the app from `api/`:
+
+```bash
+uv run fastapi dev app/main.py
+```
+
+The plain liveness check still answers with no database involved:
+
+```bash
+curl -s localhost:8000/health
+```
+
+```json
+{"status":"ok"}
+```
+
+Now the real test — the database-backed check:
+
+```bash
+curl -s localhost:8000/health/db
+```
+
+```json
+{"status":"ok","database":"reachable"}
+```
+
+`"database":"reachable"` means `get_session` opened a session, `select 1` ran against the Supabase Postgres, and the session closed cleanly — the full async path works. To see the failure mode, stop Supabase (`supabase stop`) and hit `/health/db` again: it now errors because the engine can't connect, while `/health` keeps returning `ok`. That contrast is exactly why the two checks are separate — one reports the app is *alive*, the other that it's *ready* to serve data. Restart Supabase and stop the dev server with `Ctrl-C`.
+
+Check your understanding:
+
+- Why must `DATABASE_URL` use `postgresql+asyncpg://` rather than a sync driver, given FastAPI's model and FitTrack's I/O-bound workload?
+- What breaks if the whole app shares one global session across concurrent requests, and how does `get_session` avoid it?
+- Why is `expire_on_commit=False` set on the session factory? What surprising behaviour does it prevent in async code?
+- `/health` and `/health/db` can disagree — one `ok`, the other failing. What does each actually prove, and when would you want them separate?
+
+## Recap
+
+FitTrack's backend now talks to Postgres **asynchronously**. `app/db.py` builds an `engine` with `create_async_engine(settings.database_url)` over the **asyncpg** driver (the reason `DATABASE_URL` uses `postgresql+asyncpg://`), a `SessionLocal` factory via `async_sessionmaker(engine, expire_on_commit=False)`, and a `get_session` dependency that yields **one session per request** inside an `async with` and closes it afterward — the isolated unit of work every model, repository, and router will depend on. Async matches FastAPI's event loop so a worker waiting on a query can serve others; a per-request session keeps concurrent transactions from corrupting each other; and `expire_on_commit=False` keeps a just-committed row readable without a surprise `await`. You proved it end to end with `GET /health/db`, which runs `select 1` through a real session and reports the database `reachable`, distinct from the app-only `/health`. The backend can now read and write — but it still serves anyone who asks. Next, [Auth (Supabase JWT) →](/fittrack/en/auth/) adds the other half of every request: verifying the caller's Supabase JWT and resolving who they are, so those sessions run on behalf of a known user.

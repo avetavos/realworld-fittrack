@@ -1,0 +1,167 @@
+---
+title: The app and its config
+description: "Give the FastAPI app typed, validated configuration: an app/config.py holding a Settings(BaseSettings) from pydantic-settings that reads the shared root .env, exposed as a single settings singleton. Why typed settings beat os.getenv scattered through the code, why one module-level instance, and why config that fails fast at startup is safer than a missing var discovered mid-request. Verified by importing settings, watching a missing required value raise a clear error, and running the app."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+Configuration for the `api/` project — the layer that turns the environment variables from [The repo layout →](/fittrack/en/setup/repo-layout/) into typed values the code can use. Right now `app/main.py` (from [The Python toolchain →](/fittrack/en/setup/python-toolchain/)) is a bare app with a `/health` endpoint and no idea where the database is or what secret verifies a token. This lesson adds **`app/config.py`**: a `Settings` class built on **pydantic-settings** that reads the shared root `.env`, validates every value, and is exposed as one module-level `settings` object the rest of the backend imports.
+
+You add the `pydantic-settings` dependency, write the `Settings` class, wire it into `app/main.py`, and confirm that a missing required value is caught at import time — not three requests deep into production. No database connection yet; that's the very next thing [Async database access →](/fittrack/en/fastapi/async-database/) builds on top of `settings.database_url`.
+
+## Why
+
+Every non-trivial backend needs the same handful of facts from its environment: where the database is, what secret to verify tokens with, which host and port to bind. The naive way is `os.getenv("DATABASE_URL")` wherever you happen to need it. That scatters string keys through the codebase, returns `None` (or a plain string) with no validation, typos silently become `None`, and you only discover a missing variable when the code path that reads it finally runs — often in production.
+
+**pydantic-settings** replaces all of that with a **typed, validated settings object**. You declare the fields you expect and their types; pydantic-settings reads them from the environment (and a `.env` file), coerces them to the right types, and — crucially — **raises a clear error at construction time if a required value is missing or malformed**. `api_port` is an `int`, so `"8000"` from the environment becomes the integer `8000`; if `DATABASE_URL` is absent, you get a `ValidationError` naming exactly what's missing, at startup, before the app serves a single request. Configuration becomes a documented, validated contract instead of a scatter of `os.getenv` calls.
+
+Two design points specific to FitTrack. First, the app reads the **single root `.env`** from [The repo layout →](/fittrack/en/setup/repo-layout/) — the one file that documents every value the whole project needs — rather than inventing a second `.env` inside `api/`. Since the backend runs from the `api/` directory, that file sits one level up, at `../.env`. Second, `Settings` is instantiated **once**, as a module-level `settings = Settings()`, and imported everywhere. Reading and validating the environment is work you want to do exactly once at startup, not per request; a single shared instance also means the whole app agrees on one consistent view of its configuration.
+
+## Pros & cons
+
+**pydantic-settings typed `Settings`** vs. **`os.getenv` calls scattered through the code**
+
+- **Pros:** every value is declared once with a type and validated at load — `int` fields are real ints, a missing required value is a clear error at startup, and the full list of what the app needs is one readable class; editors autocomplete `settings.database_url` and catch typos that `os.getenv("DATBASE_URL")` never would.
+- **Cons:** it's another dependency and a small amount of ceremony compared to a bare `os.getenv`, and pydantic's validation model is one more thing to learn. For anything beyond a throwaway script the validation and single source of truth pay for themselves immediately.
+
+**One module-level `settings` singleton** vs. **constructing `Settings()` wherever config is needed**
+
+- **Pros:** the environment is read and validated exactly once at import, so startup fails fast and every module shares one consistent configuration; imports stay trivial (`from app.config import settings`).
+- **Cons:** a module-level instance runs at import time, which can make some test setups want to override values (pydantic-settings supports constructing a fresh `Settings(...)` with overrides for exactly that); and a true singleton is global state, which you keep disciplined by never mutating it. The simplicity wins for an app this size.
+
+## Set it up
+
+### 1. Add the dependency
+
+From `api/`:
+
+```bash
+uv add pydantic-settings
+```
+
+This adds `pydantic-settings` to `pyproject.toml` and installs it (Pydantic v2 itself comes along as its dependency).
+
+### 2. `app/config.py`
+
+```python
+# app/config.py — typed, validated application configuration.
+# Reads the shared root .env and the process environment, exposed as a
+# single `settings` instance the rest of the app imports.
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """All configuration FitTrack's backend needs, validated at startup.
+
+    Field names are lower_snake_case; pydantic-settings matches them to
+    environment variables case-insensitively (DATABASE_URL -> database_url).
+    """
+
+    # Supabase — the backend verifies tokens with the JWT secret and
+    # connects to Postgres with the database URL. See the Supabase project
+    # setup lesson for where each value comes from.
+    database_url: str
+    supabase_url: str
+    supabase_anon_key: str
+    supabase_jwt_secret: str
+
+    # API server bind address. Sensible defaults; overridable via env.
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+
+    model_config = SettingsConfigDict(
+        # The shared .env lives at the repo root; the app runs from api/.
+        env_file="../.env",
+        env_file_encoding="utf-8",
+        # Ignore any env vars we don't model rather than erroring on them.
+        extra="ignore",
+    )
+
+
+# Instantiate once at import. Reads and validates the environment here, so
+# a missing or malformed value fails loudly at startup, not mid-request.
+settings = Settings()
+```
+
+The three required fields have no default, so if any is absent the `Settings()` call raises a `ValidationError` naming it. `api_host`/`api_port` have defaults, so they're optional. In real deployment the values come from actual environment variables (there's no `.env` file in a container) — `env_file` is a development convenience; pydantic-settings reads the process environment either way.
+
+### 3. Wire it into `app/main.py`
+
+```python
+# app/main.py — creates the FastAPI application and imports the validated
+# settings so the app fails fast if configuration is missing.
+from fastapi import FastAPI
+
+from app.config import settings
+
+app = FastAPI(title="FitTrack API")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Liveness check — no auth, no database, just proof the app is up."""
+    return {"status": "ok"}
+
+
+@app.get("/config-check")
+def config_check() -> dict[str, str | int]:
+    """Non-secret confirmation that config loaded. Never expose secrets here."""
+    return {"supabase_url": settings.supabase_url, "api_port": settings.api_port}
+```
+
+Importing `app.config` is what forces `Settings()` to run at startup — so a misconfigured app refuses to start rather than failing later. The `/config-check` route echoes only *non-secret* values (never the JWT secret or database URL); it exists just to prove config is wired, and you'll remove it once real routes arrive.
+
+## Verify
+
+First, prove the settings load and are typed. From `api/`, with the root `.env` filled in from [The Supabase project →](/fittrack/en/setup/supabase-project/):
+
+```bash
+uv run python -c "from app.config import settings; print(settings.api_port, type(settings.api_port))"
+```
+
+```txt
+8000 <class 'int'>
+```
+
+`8000` printed as a real `int` (not the string `"8000"`) is pydantic-settings coercing the value. Now prove config **fails fast** when something required is missing — temporarily blank out the database URL:
+
+```bash
+uv run python -c "import os; os.environ.pop('DATABASE_URL', None)" \
+  && DATABASE_URL= uv run python -c "from app.config import settings"
+```
+
+```txt
+pydantic_core._pydantic_core.ValidationError: 1 validation error for Settings
+database_url
+  Field required [type=missing, ...]
+```
+
+A clear error, at import, naming the missing field — exactly the failure you want at startup rather than mid-request. Finally, run the app and confirm both endpoints:
+
+```bash
+uv run fastapi dev app/main.py
+```
+
+```bash
+curl -s localhost:8000/health && echo && curl -s localhost:8000/config-check
+```
+
+```json
+{"status":"ok"}
+{"supabase_url":"http://127.0.0.1:54321","api_port":8000}
+```
+
+The app starts (proving config validated) and reports its non-secret configuration. Stop the server with `Ctrl-C`.
+
+Check your understanding:
+
+- What does pydantic-settings do that `os.getenv("DATABASE_URL")` doesn't — name two things — and when does each catch a problem?
+- Why is `settings` created once at module level instead of calling `Settings()` inside each function that needs a value?
+- The app reads `../.env`. Why one level up, and why is `env_file` only a development convenience rather than how production gets its config?
+- `/config-check` returns `supabase_url` and `api_port` but never `supabase_jwt_secret`. Why must that endpoint never echo the secret?
+
+## Recap
+
+The backend now has **typed, validated configuration**. `app/config.py` defines a `Settings(BaseSettings)` from **pydantic-settings** that reads the shared root `.env` (at `../.env`, since the app runs from `api/`) plus the process environment, declares each value with a type, and is exposed as a single module-level **`settings`** instance imported across the app. Because `Settings()` runs at import, a missing or malformed required value — `database_url`, `supabase_url`, `supabase_anon_key`, `supabase_jwt_secret` — raises a clear `ValidationError` at **startup**, not mid-request, while `api_host`/`api_port` fall back to defaults. You wired `settings` into `app/main.py`, confirmed values load with correct types, watched a missing field fail loudly, and ran the app. With configuration in hand, the backend can finally reach its database: next, [Async database access →](/fittrack/en/fastapi/async-database/) uses `settings.database_url` to build an async SQLAlchemy engine, a session factory, and a `get_session` dependency, then proves connectivity with a database-backed health check.
