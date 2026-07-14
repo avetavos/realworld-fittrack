@@ -1,0 +1,213 @@
+---
+title: Ownership & validation
+description: "The write half of the exercise catalog: PATCH /exercises/{id} and DELETE /exercises/{id}, editable only by the user who created them — 404 when it doesn't exist, 403 when it exists but isn't yours. Why writes draw the 403/404 line differently from reads, how a partial-update schema (exclude_unset) applies only the fields sent, and how Pydantic v2 field constraints reject bad input at the door with a 422. Verified with a Supabase JWT and curl against localhost:8000."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+The mutating half of `app/routers/exercises.py`, on top of the read routes from [The exercise catalog CRUD →](/fittrack/en/exercises/catalog-crud/):
+
+- `PATCH /exercises/{id}` — a **partial** update of an exercise you own.
+- `DELETE /exercises/{id}` — remove an exercise you own.
+
+Both are **own-only**: only the user in the `created_by` column may change or delete the row. That gives us two failure modes to get right — `404` when the exercise doesn't exist, `403` when it exists but belongs to someone else — and it's the first place FitTrack has to decide which of those to return. Alongside ownership we lean on **Pydantic v2 validation**: an `ExerciseUpdate` schema whose field constraints reject nonsense input with a `422` before any of our code runs. Together these are the guardrails every write endpoint in the API reuses.
+
+## Why
+
+Reads and writes draw the `403`/`404` line in *opposite* places, and the reason is what the caller is allowed to know. On a read, a private exercise you don't own is a `404` — you shouldn't even learn it exists. But `PATCH`/`DELETE` targets are things you *can* see: the global catalog exercises (`is_public = true`) are visible to everyone, and someone might try to edit "Bench Press". That exercise plainly exists — pretending otherwise with a `404` would be a lie the client can disprove. The honest answer is **`403 Forbidden`: it's real, you just don't own it.** So the write path checks existence first (`404` if the row is gone) and ownership second (`403` if `created_by` isn't you). A seeded global exercise has `created_by = null`, so nobody owns it and *nobody* can edit it — exactly right for a shared catalog.
+
+`PATCH` is a **partial** update, and Pydantic v2 makes that clean. `ExerciseUpdate` has every field optional, and `model_dump(exclude_unset=True)` returns only the keys the client actually sent — so `{"name": "New Name"}` renames without touching `muscle_group` or `is_public`, and a field the client omits is left exactly as it was. That's the difference between `PATCH` (change these fields) and `PUT` (replace the whole thing); FitTrack uses `PATCH` because a client editing one field shouldn't have to resend the others and risk clobbering them.
+
+Validation belongs at the **door**. Every constraint — a non-empty `name`, a bounded length, a real boolean — lives declaratively on the Pydantic schema, so FastAPI validates the body *before* your handler is entered and returns a precise `422` with the offending field if anything is wrong. You never write `if not name: raise ...`; the schema is the specification, the error messages come for free, and your handler only ever runs against data already known to be well-formed.
+
+## Pros & cons
+
+**`403` for a resource you can see but don't own** vs. **`404` to hide its existence on writes**
+
+- **Pros:** `403` is the honest status for the catalog — public exercises are visible to everyone, so denying an edit with `404` ("no such exercise") is a claim the client can trivially disprove by reading it a moment earlier; `403` says exactly what's true and what the client can't do about it, which is easier to handle correctly.
+- **Cons:** distinguishing "exists" from "yours" means the response confirms the row exists to someone who can't modify it — a tiny information disclosure. For a *private* exercise you don't own you'd prefer `404` (and reads already give that); the catalog's public exercises make `403` the right call for writes, but it's a judgement, not a law.
+
+**Declarative Pydantic field constraints** vs. **hand-written validation inside the handler**
+
+- **Pros:** constraints (`min_length`, `max_length`, types) sit on the schema as a single readable spec; FastAPI enforces them before the handler runs and returns a structured `422` naming the bad field, all documented automatically in `/docs`. The handler stays pure business logic.
+- **Cons:** very cross-field or context-dependent rules ("this name must be unique for this user") can't be expressed as a simple field constraint and still need a check in the handler or repository; and you have to know Pydantic's validator vocabulary. For the ordinary shape-of-the-input rules, declarative wins outright.
+
+## Set it up
+
+### 1. `app/schemas/exercise.py`
+
+Add the partial-update schema alongside `ExerciseCreate`/`ExerciseRead`. Every field is optional; the constraints match `ExerciseCreate`'s.
+
+```python
+# app/schemas/exercise.py — add ExerciseUpdate to the existing schemas.
+from pydantic import BaseModel, Field
+
+
+class ExerciseUpdate(BaseModel):
+    """Partial update: every field optional. Only the keys the client
+    sends are applied (see the router's exclude_unset)."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    muscle_group: str | None = Field(default=None, min_length=1, max_length=60)
+    is_public: bool | None = None
+```
+
+### 2. `app/repositories/exercise.py`
+
+Two more methods on `ExerciseRepo` — the update applies only the fields that were set, the delete removes the row. Both commit.
+
+```python
+# app/repositories/exercise.py — add to ExerciseRepo.
+from app.schemas.exercise import ExerciseUpdate
+
+
+class ExerciseRepo:
+    # ... __init__, list_visible, create, get from the previous lesson ...
+
+    async def update(self, exercise: Exercise, data: ExerciseUpdate) -> Exercise:
+        """Apply only the fields the client sent; leave the rest untouched."""
+        for field, value in data.model_dump(exclude_unset=True).items():
+            setattr(exercise, field, value)
+        await self.session.commit()
+        await self.session.refresh(exercise)
+        return exercise
+
+    async def delete(self, exercise: Exercise) -> None:
+        await self.session.delete(exercise)
+        await self.session.commit()
+```
+
+### 3. `app/routers/exercises.py`
+
+Both routes follow the same shape: load the row, `404` if missing, `403` if it isn't yours, then act. Factor the "load and authorise" step into a small helper so `PATCH` and `DELETE` can't drift apart.
+
+```python
+# app/routers/exercises.py — add to the router from the previous lesson.
+from app.schemas.exercise import ExerciseUpdate
+
+
+async def _load_owned(
+    exercise_id: uuid.UUID, user_id: uuid.UUID, repo: ExerciseRepo
+) -> Exercise:
+    """Fetch an exercise the caller is allowed to *modify*, or raise.
+    404 when it doesn't exist; 403 when it exists but isn't theirs
+    (public catalog exercises are visible to all but owned by none)."""
+    exercise = await repo.get(exercise_id)
+    if exercise is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Exercise not found")
+    if exercise.created_by != user_id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail="You do not own this exercise"
+        )
+    return exercise
+
+
+@router.patch("/{exercise_id}", response_model=ExerciseRead)
+async def update_exercise(
+    exercise_id: uuid.UUID,
+    data: ExerciseUpdate,
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Exercise:
+    repo = ExerciseRepo(session)
+    exercise = await _load_owned(exercise_id, user_id, repo)
+    return await repo.update(exercise, data)
+
+
+@router.delete("/{exercise_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_exercise(
+    exercise_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    repo = ExerciseRepo(session)
+    exercise = await _load_owned(exercise_id, user_id, repo)
+    await repo.delete(exercise)
+```
+
+## Verify
+
+Get a token as in the [previous lesson](/fittrack/en/exercises/catalog-crud/#verify), and create an exercise you own so there's something to edit:
+
+```bash
+TOKEN=$(curl -s "http://127.0.0.1:54321/auth/v1/token?grant_type=password" \
+  -H "apikey: $SUPABASE_ANON_KEY" -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"password123"}' | jq -r .access_token)
+
+ID=$(curl -s -X POST localhost:8000/exercises \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"Split Squat","muscle_group":"legs","is_public":false}' | jq -r .id)
+```
+
+Rename it with a partial update — only `name` is sent, and `muscle_group` survives untouched:
+
+```bash
+curl -s -X PATCH localhost:8000/exercises/$ID \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"Bulgarian Split Squat"}' | jq '{name, muscle_group}'
+```
+
+```json
+{
+  "name": "Bulgarian Split Squat",
+  "muscle_group": "legs"
+}
+```
+
+Confirm the validation gate: an empty `name` violates `min_length=1`, so FastAPI rejects it with `422` before the handler runs — no bad row is ever written:
+
+```bash
+curl -s -X PATCH localhost:8000/exercises/$ID \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":""}' | jq '.detail[0] | {loc, msg}'
+```
+
+```json
+{
+  "loc": ["body", "name"],
+  "msg": "String should have at least 1 character"
+}
+```
+
+Confirm ownership: editing a **global** catalog exercise (one with `created_by = null`, which you can read but don't own) is a `403`, while a nonexistent id is a `404`:
+
+```bash
+# PUBLIC_ID = the id of any seeded is_public exercise from GET /exercises
+curl -s -o /dev/null -w "forbidden: %{http_code}\n" -X DELETE \
+  localhost:8000/exercises/$PUBLIC_ID -H "Authorization: Bearer $TOKEN"
+curl -s -o /dev/null -w "missing:   %{http_code}\n" -X DELETE \
+  localhost:8000/exercises/00000000-0000-0000-0000-000000000000 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```txt
+forbidden: 403
+missing:   404
+```
+
+Finally delete the one you own and confirm it's gone:
+
+```bash
+curl -s -o /dev/null -w "delete: %{http_code}\n" -X DELETE \
+  localhost:8000/exercises/$ID -H "Authorization: Bearer $TOKEN"
+curl -s -o /dev/null -w "get:    %{http_code}\n" \
+  localhost:8000/exercises/$ID -H "Authorization: Bearer $TOKEN"
+```
+
+```txt
+delete: 204
+get:    404
+```
+
+Check your understanding:
+
+- On a *read*, a private exercise you don't own is a `404`; on a *write*, an exercise you don't own is a `403`. Why do the two paths choose different statuses for "not yours"?
+- What does `model_dump(exclude_unset=True)` return for the body `{"name": "X"}`, and how does that make `PATCH` leave `muscle_group` unchanged?
+- Sending `{"name": ""}` returns `422` and never reaches your handler. Which layer rejected it, and where is that rule declared?
+- A seeded global exercise has `created_by = null`. Trace what `_load_owned` returns for it and why that's the behaviour you want for a shared catalog.
+
+## Recap
+
+The exercise catalog is now full CRUD: `PATCH /exercises/{id}` and `DELETE /exercises/{id}` join the read routes, both **own-only**. A shared `_load_owned` helper enforces the order that matters — `404` when the row doesn't exist, `403` when it exists but `created_by` isn't the caller — which is the honest answer for a catalog whose public exercises everyone can see but no one but the owner can change. `PATCH` is a true partial update via `ExerciseUpdate` + `model_dump(exclude_unset=True)`, applying only the fields sent, and Pydantic v2 field constraints reject malformed input with a `422` at the door, before any handler code runs. You verified the partial update, the `422`, and the `403`/`404`/`204` matrix with `curl`. That completes the Exercises API — next, [Workouts API →](/fittrack/en/workouts/) logs a whole training session and all of its sets in a single transaction.

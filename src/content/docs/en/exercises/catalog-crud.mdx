@@ -1,0 +1,242 @@
+---
+title: The exercise catalog CRUD
+description: "app/routers/exercises.py — the first real resource: GET /exercises returns the visible catalog (every public exercise plus the ones you created), POST /exercises adds one you own, and GET /exercises/{id} fetches a single exercise. How the router stays thin over ExerciseRepo, why visibility is a WHERE clause and not a Python filter, and why an exercise you can't see returns 404, not 403. Verified with a Supabase JWT and curl against localhost:8000."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+The first resource router in FitTrack: `app/routers/exercises.py`. It exposes three routes over the `Exercise` model, schemas, and `ExerciseRepo` you built in [The Domain Model →](/fittrack/en/domain/schemas-and-repositories/):
+
+- `GET /exercises` — the catalog **you** can see: every public exercise (the seeded, global ones) plus any private ones you created.
+- `POST /exercises` — create a new exercise, owned by you.
+- `GET /exercises/{id}` — fetch a single exercise, if it's one you're allowed to see.
+
+Every route is authenticated: it takes `Depends(get_current_user)` to know *who* is asking and `Depends(get_session)` for a database session, then hands the real work to `ExerciseRepo`. This lesson establishes the pattern every later router follows — a thin HTTP layer over a repository — and the visibility rule (public-or-mine) that the whole catalog turns on. [Ownership & validation →](/fittrack/en/exercises/ownership-and-validation/) then adds the mutating half (`PATCH`/`DELETE`).
+
+## Why
+
+An `Exercise` has an `is_public` flag and a nullable `created_by`. That combination encodes two kinds of exercise at once: **global catalog entries** (seeded, `is_public = true`, `created_by = null` — "Barbell Squat", "Bench Press") that everyone shares, and **personal exercises** a user invents (`created_by = them`, usually private). The single most important line in this module is therefore the visibility rule: *you may see an exercise if it is public **or** you created it.* Getting that expressed as a SQL `WHERE` clause — not a Python loop over every row — is what makes the catalog both correct and scalable.
+
+The router itself stays deliberately **thin**. FastAPI's job in `exercises.py` is to translate HTTP into a call and a result back into HTTP: pull the user id from the token, take a session, call one repository method, return its result. All the SQL lives in `ExerciseRepo`. That separation is why the same repository can later be reused by tests and by the workouts module without dragging FastAPI along, and why each route handler is three or four readable lines.
+
+The last subtlety is **what "not found" means**. `GET /exercises/{id}` for an id that doesn't exist is obviously a `404`. But `GET` for a *private exercise someone else owns* is also a `404` — not a `403` — because telling an outsider "this exists but you can't have it" leaks that it exists at all. For a read you either can see the thing or, as far as you're concerned, it isn't there. ([Ownership & validation →](/fittrack/en/exercises/ownership-and-validation/) draws the opposite line for *writes* on exercises you *can* see.)
+
+## Pros & cons
+
+**Filtering visibility in the SQL query** vs. **fetching every exercise and filtering in Python**
+
+- **Pros:** the database does what it's built for — an indexable `where is_public or created_by = :me` returns only the rows the user may see, so the app never loads other people's private data into memory, response size is bounded by what's relevant, and the rule lives in exactly one place. It stays fast as the catalog grows to thousands of rows.
+- **Cons:** the visibility predicate is now SQL you have to read to understand access control, rather than an obvious Python `if`; and a subtle mistake in the `WHERE` clause is a data-leak bug, so it deserves a test. The safety and performance win decisively — filtering in Python means fetching everything first, which is both slower and a latent privacy hole.
+
+**A thin router delegating to `ExerciseRepo`** vs. **writing the `select()` directly in the route handler**
+
+- **Pros:** the handler reads as intent ("list the visible exercises for this user"), the SQL is unit-testable without an HTTP client, and the workouts and progress modules reuse the same repository style; swapping how a query works never touches the route.
+- **Cons:** it's one more layer and one more file for what is, today, a one-line query — indirection you don't strictly need for three routes. It pays for itself the moment a query is reused or grows a join, which every resource here eventually does.
+
+## Set it up
+
+### 1. `app/repositories/exercise.py`
+
+The router calls these methods; the SQL that enforces visibility lives here.
+
+```python
+# app/repositories/exercise.py — data access for the exercise catalog.
+import uuid
+
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.exercise import Exercise
+from app.schemas.exercise import ExerciseCreate
+
+
+class ExerciseRepo:
+    """Async data access for exercises. Takes a live AsyncSession."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def list_visible(self, user_id: uuid.UUID) -> list[Exercise]:
+        """Every public exercise plus the caller's own — the whole rule
+        is this one WHERE clause; nothing the user may not see is loaded."""
+        result = await self.session.execute(
+            select(Exercise)
+            .where(or_(Exercise.is_public.is_(True), Exercise.created_by == user_id))
+            .order_by(Exercise.name)
+        )
+        return list(result.scalars().all())
+
+    async def create(self, data: ExerciseCreate, owner_id: uuid.UUID) -> Exercise:
+        exercise = Exercise(
+            name=data.name,
+            muscle_group=data.muscle_group,
+            is_public=data.is_public,
+            created_by=owner_id,  # the creator owns it; never trust a client-sent owner
+        )
+        self.session.add(exercise)
+        await self.session.commit()
+        await self.session.refresh(exercise)
+        return exercise
+
+    async def get(self, exercise_id: uuid.UUID) -> Exercise | None:
+        """Fetch by id with no visibility filter — the caller decides what
+        to do with a row the user isn't allowed to see."""
+        return await self.session.get(Exercise, exercise_id)
+```
+
+### 2. `app/routers/exercises.py`
+
+```python
+# app/routers/exercises.py — HTTP for the exercise catalog. Thin: it maps
+# requests to ExerciseRepo calls and results back to responses.
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth import get_current_user
+from app.db import get_session
+from app.models.exercise import Exercise
+from app.repositories.exercise import ExerciseRepo
+from app.schemas.exercise import ExerciseCreate, ExerciseRead
+
+router = APIRouter(prefix="/exercises", tags=["exercises"])
+
+
+@router.get("", response_model=list[ExerciseRead])
+async def list_exercises(
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[Exercise]:
+    """The visible catalog: public exercises plus the caller's own."""
+    return await ExerciseRepo(session).list_visible(user_id)
+
+
+@router.post("", response_model=ExerciseRead, status_code=status.HTTP_201_CREATED)
+async def create_exercise(
+    data: ExerciseCreate,
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Exercise:
+    """Create an exercise owned by the caller."""
+    return await ExerciseRepo(session).create(data, owner_id=user_id)
+
+
+@router.get("/{exercise_id}", response_model=ExerciseRead)
+async def get_exercise(
+    exercise_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Exercise:
+    """A single exercise — but only if the caller may see it. A private
+    exercise owned by someone else is a 404, not a 403: we don't reveal
+    that it exists."""
+    exercise = await ExerciseRepo(session).get(exercise_id)
+    if exercise is None or not (exercise.is_public or exercise.created_by == user_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Exercise not found")
+    return exercise
+```
+
+### 3. Wire the router into `app/main.py`
+
+`main.py` stays small — it just includes the router (as [The Python toolchain →](/fittrack/en/setup/python-toolchain/) promised it always would):
+
+```python
+# app/main.py
+from fastapi import FastAPI
+
+from app.routers import exercises
+
+app = FastAPI(title="FitTrack API")
+
+app.include_router(exercises.router)
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+```
+
+## Verify
+
+Start the API (`uv run fastapi dev app/main.py`) with the local Supabase stack running. Every route is authenticated, so first get a **JWT from Supabase Auth** by signing in against the local GoTrue server. (If you haven't created a user yet, swap `token?grant_type=password` for `signup`.)
+
+```bash
+# Grab the anon key printed by `supabase status`, then sign in for a token.
+export SUPABASE_ANON_KEY="eyJhbGciOiExample.anon.key"
+
+TOKEN=$(curl -s "http://127.0.0.1:54321/auth/v1/token?grant_type=password" \
+  -H "apikey: $SUPABASE_ANON_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"password123"}' | jq -r .access_token)
+
+echo "${TOKEN:0:16}..."   # a JWT: eyJhbGciOiJIUzI1...
+```
+
+List the catalog — with a fresh database you'll see whatever public exercises the seed created (empty is fine):
+
+```bash
+curl -s localhost:8000/exercises -H "Authorization: Bearer $TOKEN" | jq
+```
+
+```json
+[]
+```
+
+Create one of your own, and capture its id:
+
+```bash
+ID=$(curl -s -X POST localhost:8000/exercises \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Bulgarian Split Squat","muscle_group":"legs","is_public":false}' \
+  | tee /dev/stderr | jq -r .id)
+```
+
+```json
+{
+  "id": "8f2c1e6a-6d1b-4e2a-9c33-6a0b2d4e5f67",
+  "name": "Bulgarian Split Squat",
+  "muscle_group": "legs",
+  "is_public": false,
+  "created_by": "b1e7...your-user-id...",
+  "created_at": "2026-07-14T09:12:00Z"
+}
+```
+
+Fetch it back by id, and confirm the missing-vs-forbidden rule — a random id is a `404`:
+
+```bash
+curl -s localhost:8000/exercises/$ID -H "Authorization: Bearer $TOKEN" | jq .name
+curl -s -o /dev/null -w "%{http_code}\n" \
+  localhost:8000/exercises/00000000-0000-0000-0000-000000000000 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```txt
+"Bulgarian Split Squat"
+404
+```
+
+Finally, confirm the gate itself: with **no** token, every route is `401`.
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/exercises
+```
+
+```txt
+401
+```
+
+Check your understanding:
+
+- Why is the public-or-mine rule written as a SQL `WHERE` clause instead of fetching all exercises and filtering them in Python? Name both a performance and a privacy reason.
+- `GET /exercises/{id}` returns `404` for a private exercise you don't own, even though it exists. What would returning `403` instead leak?
+- The route handlers are three or four lines each. Where does the actual SQL live, and what does that separation buy you when you write tests?
+- `create()` sets `created_by` from `get_current_user`, never from the request body. Why must ownership come from the token and not the client?
+
+## Recap
+
+`app/routers/exercises.py` is FitTrack's first resource router: `GET /exercises` (public + own), `POST /exercises` (owned by the caller), and `GET /exercises/{id}` — each authenticated with `Depends(get_current_user)` and given a session by `Depends(get_session)`. The router stays **thin**, delegating every query to `ExerciseRepo`, whose `list_visible` expresses the whole access rule as one `where is_public or created_by = :me` clause so nothing the user may not see is ever loaded. A single exercise the caller can't see returns `404`, not `403`, to avoid leaking its existence, and the router is wired into `app/main.py` with `include_router`. You verified it end to end with a real Supabase JWT and `curl`. Next, [Ownership & validation →](/fittrack/en/exercises/ownership-and-validation/) adds `PATCH` and `DELETE` — where "you can see it but not change it" *is* a `403` — and layers Pydantic validation over the write path.
