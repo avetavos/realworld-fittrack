@@ -1,0 +1,150 @@
+---
+title: The current user
+description: "Turn the /me stub into a real endpoint: protect a route with Depends(get_current_user), take the verified user id, and look the profile up in the database over the async session from app/db.py — returning it, or 404 when no profile row exists. Why the session dependency and the auth dependency compose cleanly, and why /me reads from a raw query now and a typed model later. Verified by fetching your own profile with a real Supabase token and getting a 404 for an unknown user."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+`GET /me` — the endpoint that answers "who am I, and what's my profile?" Last lesson's `/me` only echoed the id from the token. Now it does the real job: take the verified user id, open the **async database session**, look up the matching row in `profiles`, and return it — or `404` if, somehow, no profile exists for that id.
+
+This is the first route that composes **two** dependencies: `get_current_user` (from [Verify the Supabase JWT →](/fittrack/en/auth/verify-the-jwt/)) to establish *who*, and `get_session` (from [Async database →](/fittrack/en/fastapi/async-database/)) to get a connection to read with. That pairing — "a verified user id plus a session" — is the exact shape every protected, data-touching route in FitTrack uses, so `/me` is the template.
+
+## Why
+
+The JWT already carries the user's id in its `sub` claim, so a naive `/me` could just return that and stop. But "the current user" in a product means the user's **profile** — their `display_name`, when they joined — and that lives in the `profiles` table, not in the token. The token proves *identity*; the database holds the *record*. `/me` is where those two meet: authenticate from the token, then read from the row keyed by that identity.
+
+The mechanics are just FastAPI dependencies stacking. `user_id: CurrentUser` runs the JWT check and injects the id. `session: Annotated[AsyncSession, Depends(get_session)]` opens a session for the life of the request and closes it afterward, so the handler never manages connection lifecycle itself. Both run before the body; if the token is bad the handler never executes, so by the time your code runs you already have a trustworthy id and a live session. Note the id we key on is the token's `sub`, so `/me` can only ever return *your own* profile — there's no id in the URL to tamper with. That property, "the identity comes from the verified token, never from client-supplied input," is the backbone of FitTrack's authorization.
+
+One honest note about ordering: the typed SQLAlchemy `Profile` model doesn't exist yet — it's the very next module. So `/me` reads the profile with a **parameterized raw SQL query** through the session for now. That's not a hack; it's a legitimate way to read one row, and it keeps this lesson focused on the auth-plus-session pattern rather than pulling the whole ORM forward. [The domain model →](/fittrack/en/domain/) introduces the `Profile` model and repositories, and the Exercises and Workouts APIs then read through those instead of raw SQL. Seeing both makes the value of the model obvious.
+
+## Pros & cons
+
+**Deriving the user from the token's `sub`** vs. **accepting a user id as a path/query parameter**
+
+- **Pros:** a caller can only ever act as themselves — there is no id in the request they could change to read someone else's profile, so a whole class of "insecure direct object reference" bugs is impossible by construction; the handler needs no extra ownership check for `/me`.
+- **Cons:** it only fits "the current user" endpoints — anything that legitimately addresses *another* resource by id (a specific workout, an exercise) still needs an explicit ownership check in the query. So this pattern is a strong default, not a universal one; later routes combine "id from token" with "and `where user_id = :me`" filters.
+
+**Reading `/me` with a raw parameterized query now** vs. **waiting to build the ORM model first**
+
+- **Pros:** `/me` ships in the auth module where it belongs, with no forward dependency on code that doesn't exist yet; a single parameterized read is small, clear, and safe against injection because the value is bound, never interpolated.
+- **Cons:** the result is an untyped row rather than a validated `Profile`/`ProfileRead`, so there's no schema enforcing the response shape yet, and this one query gets rewritten next module. That's a deliberate, contained bit of throwaway — the alternative is dragging the entire domain layer into an auth lesson.
+
+## Set it up
+
+### 1. `app/main.py`
+
+Replace last lesson's echo `/me` with one that reads the profile. It now depends on the session too:
+
+```python
+# app/main.py
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, HTTPException, status
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth import CurrentUser
+from app.db import get_session
+
+app = FastAPI(title="FitTrack API")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Liveness check — no auth, no database, just proof the app is up."""
+    return {"status": "ok"}
+
+
+@app.get("/me")
+async def read_me(
+    user_id: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Return the current user's profile.
+
+    The id comes from the verified token, so this only ever returns the
+    caller's own row. A 404 means the JWT is valid but no profile row was
+    provisioned for that user.
+    """
+    result = await session.execute(
+        text(
+            "select id, display_name, created_at "
+            "from profiles where id = :id"
+        ),
+        {"id": user_id},
+    )
+    row = result.mappings().first()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Profile not found",
+        )
+    return dict(row)
+```
+
+Two details worth naming. The query uses a **bound parameter** (`:id` with `{"id": user_id}`), never string interpolation — the value can't alter the SQL. And `get_session` (async) makes the whole handler `async def`, so the database read is awaited without blocking the event loop. The response is a plain `dict` for now; next module gives it a `ProfileRead` schema.
+
+### 2. Where the profile row comes from
+
+`/me` returns `404` when there's no `profiles` row for the id. In FitTrack that row is created automatically the moment a user signs up: the Supabase module added a trigger on `auth.users` that inserts a matching `profiles` row (see [Auth & RLS →](/fittrack/en/supabase/auth-and-rls/)). So in normal operation every valid token has a profile behind it, and a `404` here signals a user who was created before that trigger existed — a useful, honest failure rather than a crash.
+
+## Verify
+
+Start the API and grab a token exactly as in the previous lesson:
+
+```bash
+uv run fastapi dev app/main.py
+```
+
+```bash
+TOKEN=$(curl -s "http://127.0.0.1:54321/auth/v1/token?grant_type=password" \
+  -H "apikey: $SUPABASE_ANON_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"lifter@example.com","password":"password123"}' | jq -r .access_token)
+```
+
+Fetch your profile — this time you get the **row**, not just the id:
+
+```bash
+curl -s localhost:8000/me -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"id":"3f4a1c2e-9b7d-4e1a-8c6f-2d5b0a1e7c93","display_name":"","created_at":"2026-07-14T09:12:44.201Z"}
+```
+
+Confirm the guards still hold — no token is `401` (the auth dependency runs first, before any database work):
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/me
+```
+
+```txt
+401
+```
+
+As a run check that the *not-found* path works, temporarily delete your profile row and call `/me` again — a valid token with no profile must be `404`, not a `500`:
+
+```bash
+psql "$DATABASE_URL" -c "delete from profiles where id = '3f4a1c2e-9b7d-4e1a-8c6f-2d5b0a1e7c93';"
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/me -H "Authorization: Bearer $TOKEN"
+```
+
+```txt
+404
+```
+
+(Re-run your Supabase seed, or sign up again, to restore the row.) Three outcomes — `200` with the row, `401` without a token, `404` for a valid token with no profile — mean the endpoint composes auth and the database correctly.
+
+Check your understanding:
+
+- `/me` takes no id in its URL, yet returns *your* profile and no one else's. Where does the id it queries on come from, and why does that make an "act as another user" attack impossible here?
+- Two dependencies run before `read_me`'s body. What does each provide, and what happens to the database query if the token is invalid?
+- Why is the SQL written with a bound `:id` parameter and `{"id": user_id}` rather than formatting the id into the query string?
+- A valid token returns `404` from `/me`. What does that specifically tell you — and why is it not the same situation as a `401`?
+
+## Recap
+
+`GET /me` is FitTrack's first fully realized protected endpoint, and the template for every one that follows: `Depends(get_current_user)` establishes *who* from the verified JWT, `Depends(get_session)` provides the async session to read with, and the handler looks up the `profiles` row keyed on the token's `sub` — returning it, or `404` when no profile exists. Because the id comes from the token and never from the URL, `/me` can only return the caller's own record, which is the authorization pattern the whole API leans on. We read with a parameterized raw query for now because the ORM model arrives next; we verified `200` / `401` / `404` against a real Supabase token. That "typed model" is exactly what comes next: [The domain model →](/fittrack/en/domain/) builds the SQLAlchemy models, Pydantic schemas, and repositories that replace this raw query and back every endpoint from Exercises onward.
