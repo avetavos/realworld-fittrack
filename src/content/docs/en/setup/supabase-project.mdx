@@ -1,0 +1,150 @@
+---
+title: The Supabase project
+description: "Provision Supabase both ways: a local stack via the Supabase CLI (supabase init + supabase start, running Postgres + Auth + Studio in Docker) for development, and a free hosted project for later deployment. Where the four values FitTrack needs come from — SUPABASE_URL, anon key, JWT secret, DATABASE_URL — and why local-first beats developing against the cloud. Verified with supabase status and a psql connection."
+sidebar:
+  order: 3
+---
+
+## What we're building
+
+The managed platform the whole backend sits on. FitTrack uses **Supabase** for two things — a **Postgres** database and **Auth** — and this lesson provisions both, twice: a **local stack** you run on your machine with the Supabase CLI for day-to-day development, and a **hosted project** in the cloud you'll deploy against later. By the end, the four values [The repo layout →](/fittrack/en/setup/repo-layout/) put in `.env.example` — `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_JWT_SECRET`, and `DATABASE_URL` — are real, filled into your `.env`, pointing at the local stack.
+
+No application code yet. This is the last setup lesson: after it, [Supabase Foundation →](/fittrack/en/supabase/) starts modelling FitTrack's schema on top of the database you stand up here.
+
+## Why
+
+Supabase is a **managed Postgres plus a set of services around it** — Auth (users, JWTs, OAuth), auto-generated APIs, storage, and realtime. FitTrack uses the two that matter for a backend: the database and Auth. The important thing this lesson establishes is that you don't have to choose between "develop against the cloud" and "run everything yourself" — the **Supabase CLI runs the entire stack locally in Docker**. `supabase start` brings up a real Postgres, the Auth server (GoTrue), the Studio web UI, and the rest, all on localhost, seeded to behave exactly like the hosted product.
+
+Developing **local-first** is the right default for the same reasons every prior Real-World Project ran its infrastructure locally: your development loop never depends on the network or a shared cloud project; you can reset the database to a clean state in seconds; migrations are tested against a real Postgres before they ever touch production; and you can't accidentally corrupt shared data because there is no shared data — it's your machine. The hosted project exists for **deployment** (Module 13) and for anything that genuinely needs the cloud, but you build and test against local.
+
+The four values FitTrack needs each come from a specific place, and it's worth knowing which is which because [Auth (Supabase JWT) →](/fittrack/en/auth/) leans on the distinction:
+
+- **`SUPABASE_URL`** — the base URL of the Supabase API (`http://127.0.0.1:54321` locally). Clients use it to reach Auth. Public.
+- **`SUPABASE_ANON_KEY`** — the public API key clients present to Supabase Auth. Safe to embed in a shipped app. Public.
+- **`SUPABASE_JWT_SECRET`** — the secret Supabase signs its JWTs with. The **backend** uses it to *verify* a token a client presents. Server-only — never shipped.
+- **`DATABASE_URL`** — the direct Postgres connection string the FastAPI backend uses for SQL. Server-only.
+
+`supabase start` prints all four at once.
+
+## Pros & cons
+
+**Local-first development (Supabase CLI stack in Docker)** vs. **developing directly against a hosted cloud project**
+
+- **Pros:** no network dependency in your dev loop, instant and free database resets, migrations tested against a real Postgres before production, and zero risk of clobbering shared data since there isn't any; it also mirrors how TaskFlow, DevBlog, and ShopMicro all ran their infrastructure locally.
+- **Cons:** it needs Docker running and a few GB of images pulled the first time; and the local stack can drift from the hosted project's settings if you're not disciplined about applying the same migrations to both — which is exactly why the schema lives in version-controlled migration files ([Supabase Foundation →](/fittrack/en/supabase/)), not in clicks in the dashboard.
+
+**Supabase (managed Postgres + Auth)** vs. **a plain Postgres you run yourself plus a hand-rolled auth system**
+
+- **Pros:** Auth — sign-up, sign-in, password reset, token refresh, OAuth providers, and secure JWT issuance — is a large, security-sensitive surface you get correct and for free, with first-class client SDKs; the managed hosted Postgres means no backups, patching, or connection infrastructure to run in production.
+- **Cons:** you take on Supabase as a dependency and its conventions (its JWT shape, its `auth.users` table, its way of doing row-level security); rolling your own would be fully under your control but is a great deal of security-critical code to write and maintain — a trade FitTrack makes deliberately in Supabase's favour, since auth is not the product.
+
+## Set it up
+
+### 1. Install the Supabase CLI
+
+```bash
+# macOS (Homebrew); see supabase.com/docs/guides/cli for other platforms
+brew install supabase/tap/supabase
+supabase --version
+```
+
+### 2. Initialise Supabase in the repo
+
+From the repo root:
+
+```bash
+supabase init
+```
+
+This creates a `supabase/` directory holding the local config and a `migrations/` folder — [Supabase Foundation →](/fittrack/en/supabase/) fills that folder in. Commit `supabase/`; it's project configuration, not a secret.
+
+### 3. Start the local stack
+
+Make sure Docker is running, then:
+
+```bash
+supabase start
+```
+
+The first run pulls the images (a few minutes). When it finishes, it prints the values you need:
+
+```txt
+         API URL: http://127.0.0.1:54321
+          DB URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+      Studio URL: http://127.0.0.1:54323
+        anon key: eyJhbGciOiExample.anon.key
+service_role key: eyJhbGciOiExample.service.key
+      JWT secret: super-secret-jwt-token-with-at-least-32-characters
+```
+
+### 4. Fill in `.env`
+
+Copy those into the `.env` you created last lesson. Note the `DATABASE_URL` swaps Supabase's `postgresql://` for the async driver scheme the backend uses:
+
+```txt
+SUPABASE_URL=http://127.0.0.1:54321
+SUPABASE_ANON_KEY=eyJhbGciOiExample.anon.key
+SUPABASE_JWT_SECRET=super-secret-jwt-token-with-at-least-32-characters
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:54322/postgres
+```
+
+### 5. (Later) the hosted project
+
+For deployment you'll also create a free hosted project at [supabase.com](https://supabase.com) → **New project**, and link it:
+
+```bash
+supabase link --project-ref your-project-ref
+```
+
+You don't need this yet — the local stack is enough for every module until [Deployment →](/fittrack/en/deployment/). It's noted here so the two-environments picture is complete.
+
+## Verify
+
+Confirm the stack is up:
+
+```bash
+supabase status
+```
+
+```txt
+supabase local development setup is running.
+         API URL: http://127.0.0.1:54321
+      Studio URL: http://127.0.0.1:54323
+          DB URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+```
+
+Open **Studio** at [http://127.0.0.1:54323](http://127.0.0.1:54323) — the same dashboard as the hosted product, but pointed at your local database. Then connect to the Postgres directly to prove `DATABASE_URL` works:
+
+```bash
+psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "select version();"
+```
+
+```txt
+                                          version
+------------------------------------------------------------------------------
+ PostgreSQL 15.x on aarch64-unknown-linux-gnu, compiled by gcc ...
+(1 row)
+```
+
+Confirm the Auth server is answering too — it's what the clients will sign in against:
+
+```bash
+curl -s http://127.0.0.1:54321/auth/v1/health
+```
+
+```json
+{"description":"GoTrue is a user registration and authentication API","name":"GoTrue","version":"..."}
+```
+
+When you're done for the day, `supabase stop` shuts the stack down (your data persists to the next `supabase start`).
+
+Check your understanding:
+
+- Which of the four values — `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_JWT_SECRET`, `DATABASE_URL` — are safe to ship in a client app, and which must stay on the server? Why does the backend need the JWT secret specifically?
+- What does `supabase start` actually run on your machine, and why is developing against it preferable to developing against the hosted cloud project?
+- Why does `DATABASE_URL` use `postgresql+asyncpg://` where `supabase start` printed `postgresql://`? (You'll see the answer in FastAPI Foundation.)
+- The schema will live in `supabase/migrations/` rather than being clicked into Studio. What problem between the local and hosted databases does that prevent?
+
+## Recap
+
+FitTrack runs on **Supabase** — a managed Postgres plus Auth — provisioned two ways: a **local stack** via the Supabase CLI (`supabase init`, then `supabase start` running Postgres, Auth, and Studio in Docker) for development, and a **hosted project** for later deployment. `supabase start` prints the four values FitTrack needs, which you filled into `.env`: `SUPABASE_URL` and `SUPABASE_ANON_KEY` (public, for clients to reach Auth), and `SUPABASE_JWT_SECRET` and `DATABASE_URL` (server-only — the backend verifies tokens and runs SQL). You develop **local-first** for a fast, network-free, resettable loop, keeping the schema in version-controlled migrations so local and hosted never drift. `supabase status`, a `psql` connection, and the GoTrue health check confirmed the stack is live. That completes setup — next, [Supabase Foundation →](/fittrack/en/supabase/) models FitTrack's schema (`profiles`, `exercises`, `workouts`, `workout_sets`) as the first migrations against this database.

@@ -1,0 +1,145 @@
+---
+title: The Python toolchain
+description: "api/ — โปรเจกต์ FastAPI backend ที่จัดการครบวงจรด้วย uv: pyproject.toml, fastapi[standard] เป็น dependency ตัวเดียวที่สำคัญ, package app/ พร้อม health endpoint, และ `uv run fastapi dev` สำหรับรัน ทำไม uv ถึงแทน pip + venv + pip-tools และทำไม app ถึงเป็น package ไม่ใช่ script ตรวจสอบด้วยการยิง /health แล้วได้ {\"status\":\"ok\"}"
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+`api/` — FastAPI backend ตัว shared ที่ทุก client ใน FitTrack จะเรียกใช้ บทแรกนี้ยังไม่ทำอะไรที่เจาะจงกับ FitTrack เลย มันแค่ตั้งโปรเจกต์ Python ในแบบที่ทุก backend module ถัดไปจะต่อยอดจากตรงนี้ คุณติดตั้ง **uv** (เครื่องมือตัวเดียวสำหรับ virtualenv, dependency และการรันโค้ด) สร้างโปรเจกต์ด้วย `pyproject.toml` เพิ่ม **`fastapi[standard]`** เป็น dependency แล้วเขียน package `app/` ที่มีแค่ `/health` endpoint เดียว จากนั้นรันด้วย `uv run fastapi dev`
+
+พอจบบท คุณจะได้ FastAPI server ที่รันอยู่และตอบ `GET /health` จัดการทั้งหมดผ่าน `uv` พร้อม layout โปรเจกต์ที่มีที่ว่างให้ settings, database, auth และ router ที่ module ถัดไปจะเพิ่มเข้ามา จากนั้น [The repo layout →](/fittrack/th/setup/repo-layout/) จะเอาโปรเจกต์ `api/` นี้ไปวางในโครงสร้าง FitTrack repo ที่ใหญ่ขึ้น เคียงข้างกับ client อีกสองตัว
+
+## Why
+
+tooling ของ Python แต่ไหนแต่ไรมาเป็นกองโปรแกรมแยกกัน — `python -m venv` สำหรับ environment, `pip` สำหรับติดตั้ง, `pip freeze`/`pip-tools` สำหรับ pin เวอร์ชัน, `pyenv` สำหรับจัดการเวอร์ชัน Python — แต่ละตัวมี state ของตัวเองที่ต้องคอย sync ให้ตรง **uv** ยุบทั้งหมดนั้นเหลือเครื่องมือเร็ว ๆ ตัวเดียว `uv add fastapi` resolve dependency, เขียนลง `pyproject.toml`, อัปเดต lockfile (`uv.lock`) และติดตั้งมันลงใน virtualenv แบบ project-local ที่มันสร้างและจัดการให้คุณเอง `uv run <cmd>` รันคำสั่งข้างใน environment นั้นโดยที่คุณไม่ต้อง activate เองเลย ผลก็คือ dependency set ที่แน่นอนของโปรเจกต์ถูกอธิบายไว้ในไฟล์สองไฟล์ที่ใครก็ reproduce ได้ด้วย `uv sync` ครั้งเดียว และไม่มีขั้นตอน "activate venv หรือยังนะ" ให้ลืมอีก
+
+`fastapi[standard]` คือ dependency ตัวเดียวที่คุ้มค่าจะติดตั้งตั้งแต่วันแรก extra `[standard]` ดึง **Uvicorn** (ASGI server ที่รัน app จริง ๆ), **`fastapi` CLI** (`fastapi dev` สำหรับ development แบบ hot-reload, `fastapi run` สำหรับ production) และ extra ทั่วไปอย่าง `python-multipart` กับ test client ที่ใช้ `httpx` เข้ามาให้ คุณได้ FastAPI แบบ batteries-included โดยไม่ต้องมานั่งเลือก sub-package ทีละห้าตัวเอง
+
+และ app เป็น **package** (`app/`) ไม่ใช่ script `main.py` ไฟล์เดียว ตั้งแต่บรรทัดแรกเลย API ไฟล์เดียวมันโอเคอยู่จนถึงจุดที่มันไม่โอเค — และ backend ของ FitTrack จะโตขึ้นมี settings, database layer, auth dependency และ router ต่อ resource การเริ่มเป็น package หมายความว่าแต่ละส่วนพวกนั้นไปอยู่ใน module ของตัวเอง (`app/config.py`, `app/db.py`, `app/auth.py`, `app/routers/…`) แทนที่จะเป็น `main.py` ยาว 500 บรรทัดที่คุณต้องมานั่งแกะทีหลัง `app/main.py` อยู่เล็ก ๆ ไว้: มันสร้าง `FastAPI()` application แล้วต่อสาย router เข้าไป แค่นั้นพอ
+
+## Pros & cons
+
+**uv** vs. **pip + venv (+ pip-tools or Poetry)**
+
+- **Pros:** เครื่องมือตัวเดียวแทนที่จะสามหรือสี่ตัว, install และ resolve เร็วขึ้นมาก, project virtualenv ที่จัดการอัตโนมัติ (ไม่ต้อง `activate` เอง), lockfile จริงสำหรับ install ที่ reproduce ได้ และมันติดตั้งกับ pin เวอร์ชัน Python เองได้ด้วย — clone ใหม่จึงเหลือแค่ `uv sync` ไม่ต้องมีอะไรอีก
+- **Cons:** มันใหม่กว่า pip/Poetry ดังนั้น CI image, editor หรือ mirror ขององค์กรบางที่อาจต้อง setup เพิ่มเล็กน้อย และทีมที่ชำนาญเครื่องมือเดิมอยู่แล้วก็มี switching cost (นิดหน่อย) ทั้งสองอย่างนี้ไม่หนักพอจะกลบความง่ายของการมีเครื่องมือตัวเดียวสำหรับโปรเจกต์ใหม่
+
+**`fastapi[standard]` + the `fastapi` CLI** vs. **installing `fastapi` and `uvicorn` separately and running `uvicorn app.main:app`**
+
+- **Pros:** dependency บรรทัดเดียวให้คุณครบทั้ง server, dev CLI พร้อม hot reload และ test client; `fastapi dev` หา app object กับ reload setting ให้คุณเอง ซึ่งเป็นเส้นทางเริ่มต้นที่ราบรื่นที่สุดเท่าที่เป็นไปได้
+- **Cons:** extra `[standard]` ติดตั้งของบางอย่างที่ deployment แบบ minimal อาจไม่ต้องการ (คุณลดเหลือ `fastapi` + `uvicorn` เปล่า ๆ ทีหลังได้เพื่อ production image ที่เบากว่า) และความสะดวกของ `fastapi dev` ซ่อนรายละเอียด — reload, host, port — ที่ `uvicorn` เขียนออกมาชัด ๆ ซึ่งควรรู้ไว้ก่อน deploy
+
+## Set it up
+
+### 1. Install uv
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+จากนั้นยืนยันว่ามันอยู่ใน path ของคุณ:
+
+```bash
+uv --version
+```
+
+### 2. Create the `api/` project
+
+```bash
+uv init api --package
+cd api
+```
+
+`uv init --package` scaffold `pyproject.toml` กับ package layout แบบไม่มี `src` pin เวอร์ชัน Python ที่ FitTrack ใช้เป็นเป้า:
+
+```bash
+uv python pin 3.12
+```
+
+### 3. Add FastAPI
+
+```bash
+uv add "fastapi[standard]"
+```
+
+คำสั่งนี้เขียน dependency ลง `pyproject.toml` สร้าง `uv.lock` และติดตั้งทุกอย่างลงใน virtualenv ของโปรเจกต์ ตอนนี้ `pyproject.toml` ของคุณมี:
+
+```toml
+[project]
+name = "api"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.115",
+]
+```
+
+### 4. The `app/` package
+
+```python
+# app/__init__.py — marks app/ as a package. Intentionally empty.
+```
+
+```python
+# app/main.py — the FastAPI application. It stays small: create the app,
+# wire in routers (there are none yet), and expose a health check. Every
+# later module adds its piece here or in its own module, not by growing
+# this file.
+from fastapi import FastAPI
+
+app = FastAPI(title="FitTrack API")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Liveness check — no auth, no database, just proof the app is up."""
+    return {"status": "ok"}
+```
+
+บันทึกไฟล์นี้เป็น `app/__init__.py` และ `app/main.py`
+
+## Verify
+
+รัน app ด้วย FastAPI dev server:
+
+```bash
+uv run fastapi dev app/main.py
+```
+
+```txt
+INFO   Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO   Application startup complete.
+```
+
+เปิดอีก terminal แล้วยิง health endpoint:
+
+```bash
+curl -s localhost:8000/health
+```
+
+```json
+{"status":"ok"}
+```
+
+FastAPI ยัง generate API docs แบบ interactive จาก route ของคุณให้ด้วย — เปิด [http://localhost:8000/docs](http://localhost:8000/docs) แล้วคุณจะเห็น `GET /health` อยู่ในลิสต์แล้ว พร้อมปุ่ม "Try it out" อันนั้นได้มาฟรีจาก type hint และทุก endpoint ที่คุณเพิ่มจากนี้ไปก็จะโผล่มาแบบเดียวกัน
+
+หยุด server ด้วย `Ctrl-C` จากนั้นพิสูจน์ว่าโปรเจกต์ reproduce ได้จากแค่ manifest ของมัน — ลบ environment ทิ้งแล้ว build ใหม่:
+
+```bash
+rm -rf .venv && uv sync
+```
+
+`uv sync` อ่าน `pyproject.toml` กับ `uv.lock` สร้าง virtualenv ขึ้นใหม่ และติดตั้งเวอร์ชันที่ lock ไว้เป๊ะ ๆ ไม่มี output นอกจาก summary สั้น ๆ แปลว่าสำเร็จ
+
+ตรวจสอบความเข้าใจ:
+
+- `uv` ทำงานสามอย่างที่เมื่อก่อนต้องใช้ `venv`, `pip` และเครื่องมือ lockfile แยกกัน คืออะไรบ้าง และไฟล์ไหนเป็น source of truth ของแต่ละอย่าง?
+- ทำไมถึงเริ่มด้วย package `app/` แทนที่จะเป็น `main.py` ไฟล์เดียว? บอกชื่อสองไฟล์ที่คุณรู้อยู่แล้วว่าจะเข้าไปอยู่ในนั้นทีหลัง
+- extra `[standard]` ใน `fastapi[standard]` เพิ่มอะไรบ้างนอกเหนือจากตัว FastAPI เอง และตัวไหนที่ทำให้ `fastapi dev` รัน server ได้?
+- หลัง `rm -rf .venv && uv sync` uv รู้เวอร์ชัน *ที่แน่นอน* ที่จะติดตั้งใหม่ได้อย่างไร และทำไมมันถึงสำคัญกับเพื่อนร่วมทีมที่ clone repo?
+
+## Recap
+
+`api/` คือโปรเจกต์ FastAPI ที่จัดการด้วย `uv`: `uv init --package` scaffold มัน, `uv python pin 3.12` ตรึง interpreter และ `uv add "fastapi[standard]"` ติดตั้ง FastAPI พร้อม Uvicorn, `fastapi` CLI และ test client — บันทึกทุกอย่างไว้ใน `pyproject.toml` กับ `uv.lock` app เป็น package `app/` ตั้งแต่ต้น โดย `app/main.py` เก็บแค่ instance `FastAPI()` กับ `/health` endpoint เหลือที่ว่างไว้ให้ config, database, auth และ router ที่ module ถัดไปจะเพิ่ม `uv run fastapi dev app/main.py` เสิร์ฟมันพร้อม hot reload, `curl /health` คืน `{"status":"ok"}` และ `/docs` ที่ generate อัตโนมัติก็ลิสต์ route ไว้แล้ว — ทั้งหมด reproduce จากศูนย์ได้ด้วย `uv sync` ต่อไป [The repo layout →](/fittrack/th/setup/repo-layout/) เอาโปรเจกต์ `api/` นี้ไปวางใน FitTrack repo แบบเต็ม เคียงข้างกับ Flutter และ Svelte client ที่จะเรียกใช้มัน

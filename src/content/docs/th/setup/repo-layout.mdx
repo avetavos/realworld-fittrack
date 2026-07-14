@@ -1,0 +1,138 @@
+---
+title: The repo layout
+description: "FitTrack monorepo: api/ (FastAPI), mobile/ (Flutter), web/ (Svelte) และ .env ตัว shared — repository เดียวถือทั้ง backend และ client ทั้งสอง เพื่อให้ API contract กับ app ที่ใช้มัน evolve ไปด้วยกัน ทำไมถึงเลือก monorepo ตรงนี้ แต่ละ top-level directory ถือครองอะไร และ .env ตัวเดียวที่ป้อน config ให้ทุก service ตรวจสอบด้วย tree และ git status ที่ ignore ของที่ถูกต้อง"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+โครงสร้างระดับบนสุดของ FitTrack repository — directory ที่ถือของสามอย่างที่คุณจะสร้าง และ config ตัว shared ที่ผูกมันเข้าด้วยกัน:
+
+```txt
+fittrack/
+├── api/            # The FastAPI backend (from the last lesson)
+├── mobile/         # The Flutter app (Modules 9–10)
+├── web/            # The Svelte web companion (Module 11)
+├── .env.example    # Documented config every service reads
+├── .gitignore
+└── README.md
+```
+
+บทนี้ไม่ได้เขียนโค้ดเยอะ — มันวาง *ว่าอะไรไปอยู่ตรงไหน* เพื่อให้ทุก module ถัดไปมีบ้านที่ชัดเจน `api/` มีอยู่แล้วจาก [The Python toolchain →](/fittrack/th/setup/python-toolchain/); `mobile/` กับ `web/` สร้างเป็น directory เปล่าตอนนี้แล้วเติมทีหลัง artifact ตัวเดียวที่มีเนื้อจริง ๆ คือ `.env.example` ลิสต์ที่ documented ตัวเดียวของทุกค่า config ที่ backend และ client ต้องใช้
+
+## Why
+
+FitTrack เป็น **monorepo** โดยตั้งใจ: Git repository เดียวถือทั้ง backend *และ* client ทั้งสอง แทนที่จะเป็นสาม repo แยกกัน แก่นของโปรเจกต์ทั้งหมด — "สร้าง product เดียวสำหรับ client สองตัวบน backend ตัว shared เดียว" — คือคำประกาศเรื่อง **contract** ระหว่าง API กับ app ที่ใช้มัน เมื่อ backend เพิ่ม field `weight_kg` หรือเปลี่ยนชื่อ endpoint, Flutter กับ Svelte client ต้องเปลี่ยนตามด้วย ใน repo เดียว นั่นคือ commit เดียวที่แตะทั้ง `api/` กับ `mobile/` ด้วยกัน review เป็นการเปลี่ยนแปลงเดียว และเป็นไปไม่ได้เลยที่ client จะอ้างถึงรูปร่าง API ที่ไม่มีอยู่บน commit เดียวกัน ถ้าแยกเป็นสาม repo การเปลี่ยนแปลงเดียวกันกลายเป็นสาม pull request กับการเต้นเรื่อง versioning เพื่อให้เข้ากันได้
+
+แต่ละ top-level directory **ถือครอง deployable ตัวเดียว** และไม่มีอะไรรั่วข้ามกัน:
+
+- `api/` เป็นโปรเจกต์ Python ที่ self-contained — มี `pyproject.toml` ของตัวเอง, virtualenv ของตัวเอง ไม่มีอะไรใน `mobile/` หรือ `web/` import จากมัน; พวกมันคุยกับมันผ่าน HTTP เท่านั้น
+- `mobile/` เป็นโปรเจกต์ Flutter ที่ self-contained — มี `pubspec.yaml` ของตัวเอง
+- `web/` เป็นโปรเจกต์ SvelteKit ที่ self-contained — มี `package.json` ของตัวเอง
+
+isolation แบบนั้นแหละที่กัน monorepo ไม่ให้กลายเป็นก้อนพันกัน: repo จัดกลุ่มโปรเจกต์เข้าด้วยกัน แต่แต่ละตัวยัง build, test และ deploy ด้วยตัวมันเอง เหมือนที่มันจะทำถ้าอยู่ใน repo ของตัวเอง
+
+ส่วน shared คือ **`.env.example`** — template ที่ commit ไว้และไม่เป็นความลับ ลิสต์ทุก environment variable ที่ส่วนใด ๆ ของ FitTrack อ่าน พร้อมค่า placeholder ตัว `.env` จริง (ที่มี Supabase key ของจริง) ถูก git-ignore และไม่เคย commit; `.env.example` คือ documentation ว่า *อะไร* ต้องถูกตั้งค่า contributor คนใหม่ copy มันเป็น `.env` เติม Supabase credential ของตัวเอง แล้วทุก service ก็รู้ว่าต้องมองที่ไหน การเก็บลิสต์ canonical ตัวเดียวดีกว่าให้แต่ละ service คิดค้น variable ที่ไม่มี document ของตัวเอง
+
+## Pros & cons
+
+**A monorepo (backend + both clients together)** vs. **a repository per project**
+
+- **Pros:** การเปลี่ยน API กับการเปลี่ยน client ที่ขึ้นกับมันเป็น atomic commit เดียว review และ merge ด้วยกัน ดังนั้น client ไม่มีทางอ้างถึงรูปร่าง endpoint ที่ไม่มีอยู่บน commit นั้น; clone ที่เดียว, issue tracker ที่เดียว, CI config ที่เดียว; docs และ `.env.example` ตัว shared อยู่กับโค้ดที่มันอธิบาย
+- **Cons:** repo ผสม toolchain สามตัว (Python, Dart/Flutter, Node) ดังนั้น tooling และ CI ต้อง scope ต่อ directory แทนที่จะสมมติว่าเป็นภาษาเดียว; การ "run all tests" แบบไร้เดียงสาจริง ๆ แล้วคือสาม test command แยกกัน; และที่สเกลใหญ่มาก ๆ monorepo ต้องใช้ tooling เฉพาะ (build graph, sparse checkout) ที่เกินจำเป็นตรงนี้แต่ควรรู้ว่ามีอยู่
+
+**A single shared `.env` at the repo root** vs. **a separate `.env` inside each project**
+
+- **Pros:** ไฟล์เดียวให้เติมหลัง clone, ลิสต์ canonical ตัวเดียวของทุกค่า และไม่มี drift ระหว่างไฟล์ env สามตัวที่เกือบเหมือนกัน; backend กับ script client แบบ local อ่าน Supabase URL ตัวเดียวกันจากที่เดียวได้
+- **Cons:** frontend กับ backend จริง ๆ ไม่ได้ต้องการ variable *ตัวเดียวกัน* (client ต้องการ Supabase URL กับ anon key; backend ต้องการ database URL กับ JWT secret) ดังนั้นไฟล์เดียวจึงปนเรื่องกัน และคุณต้องระวังว่า client build จะฝังเฉพาะค่า *public* เท่านั้น — ไม่เอา secret ของ backend มาเด็ดขาด FitTrack เก็บมันไว้ในไฟล์ที่ documented ไฟล์เดียวแต่บอกชัดใน [Auth (Supabase JWT) →](/fittrack/th/auth/) ว่าค่าไหน ship ไป client ได้ปลอดภัยและค่าไหนต้องอยู่ฝั่ง server
+
+## Set it up
+
+### 1. Create the client directories
+
+จาก repo root (โฟลเดอร์ `fittrack/` ที่มี `api/` อยู่):
+
+```bash
+mkdir mobile web
+```
+
+พวกมันอยู่เปล่า ๆ จนถึง [Flutter — Foundation →](/fittrack/th/flutter-foundation/) และ [Svelte Web Companion →](/fittrack/th/svelte-companion/); สร้างมันตอนนี้แค่เพื่อตรึงโครงสร้างไว้
+
+### 2. `.env.example`
+
+```txt
+# --- Supabase (from your Supabase project settings) ---
+# Public values — safe to embed in client apps:
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+
+# Server-only values — NEVER ship these to a client:
+SUPABASE_JWT_SECRET=your-jwt-secret
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:54322/postgres
+
+# --- API ---
+API_HOST=0.0.0.0
+API_PORT=8000
+```
+
+บันทึกไฟล์นี้เป็น `.env.example` ที่ repo root ตัว `DATABASE_URL` ด้านบนชี้ไปที่ Supabase Postgres แบบ **local** (port `54322`, ค่า default ของ `supabase start`) — [The Supabase project →](/fittrack/th/setup/supabase-project/) ตั้งค่านั้นและอธิบายว่าแต่ละค่ามาจากไหน scheme `postgresql+asyncpg://` คือ async driver ที่ FastAPI backend ใช้; [FastAPI Foundation →](/fittrack/th/fastapi/) ต่อสายมันเข้ามา
+
+### 3. `.gitignore`
+
+```txt
+# Secrets
+.env
+
+# Python / api
+api/.venv/
+__pycache__/
+
+# Flutter / mobile
+mobile/.dart_tool/
+mobile/build/
+
+# Node / web
+web/node_modules/
+web/.svelte-kit/
+web/build/
+```
+
+บันทึกไฟล์นี้เป็น `.gitignore` ที่ repo root บรรทัดที่สำคัญคือบรรทัดแรก: **`.env` ไม่เคยถูก commit** — มีแค่ `.env.example` เท่านั้น ที่เหลือคือ build output ต่อ toolchain
+
+## Verify
+
+ยืนยันโครงสร้างจาก repo root:
+
+```bash
+ls -1
+```
+
+```txt
+.env.example
+.gitignore
+README.md
+api
+mobile
+web
+```
+
+copy template เป็น `.env` จริงที่คุณจะเติมในบทถัดไป แล้วยืนยันว่า Git ignore มัน:
+
+```bash
+cp .env.example .env
+git status --short
+```
+
+`.env` ต้อง **ไม่** โผล่ใน output — ถ้าโผล่ แสดงว่าบรรทัดใน `.gitignore` ไม่ match ส่วน `.env.example` ควรถูก track อยู่ ความต่างจุดเดียวนั้น — template ถูก commit, secret จริงถูก ignore — คือจุดประสงค์ทั้งหมดของการเช็คนี้
+
+ตรวจสอบความเข้าใจ:
+
+- ทำไมการเอา backend กับ client ทั้งสองไว้ใน repo เดียวถึงทำให้การเปลี่ยน API-บวก-client ปลอดภัยกว่าสาม pull request ที่ต้องประสานงานกันข้ามสาม repo?
+- `api/`, `mobile/` และ `web/` build แยกกันได้ทั้งหมด ช่องทางเดียวที่ `mobile/` กับ `web/` มีปฏิสัมพันธ์กับ `api/` คืออะไร?
+- ค่าไหนใน `.env.example` ที่ฝังใน client app ที่ ship ได้อย่างปลอดภัย และค่าไหนที่ต้องไม่ออกจาก server เลย? จะเกิดอะไรขึ้นถ้า secret หลุดไปอยู่ใน client build?
+- หลัง `cp .env.example .env` ทำไม `git status` ถึงต้องแสดง `.env` เป็น *ignored* ไม่ใช่ *untracked-and-ready-to-commit*?
+
+## Recap
+
+FitTrack repo เป็น **monorepo**: `api/` (FastAPI backend), `mobile/` (Flutter, ทีหลัง) และ `web/` (Svelte, ทีหลัง) แต่ละตัวเป็นโปรเจกต์ self-contained ที่ build ด้วยตัวเองและคุยกับตัวอื่นผ่าน HTTP เท่านั้น repository เดียวถือทั้งสามเพราะโปรเจกต์นี้เป็นเรื่องของ *contract* ระหว่าง API กับ client ทั้งสองโดยพื้นฐาน — การเปลี่ยน contract นั้นคือ atomic commit เดียวข้าม `api/` กับ client ไม่ใช่ปัญหาการประสานงานข้าม repo `.env.example` ตัวเดียวที่ root document ทุกค่า config ที่ FitTrack อ่าน แบ่งชัดเป็นค่า public (ปลอดภัยใน client) กับ secret ฝั่ง server เท่านั้น; ตัว `.env` จริงถูก git-ignore และไม่เคย commit ยืนยันด้วย `git status` ที่ปฏิเสธจะแสดงมัน ต่อไป [The Supabase project →](/fittrack/th/setup/supabase-project/) provision platform ที่จัดการเบื้องหลัง FitTrack แล้วเติมค่าจริงที่ placeholder เหล่านี้แทนอยู่

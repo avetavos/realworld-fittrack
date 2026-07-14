@@ -1,0 +1,145 @@
+---
+title: The Python toolchain
+description: "api/ — the FastAPI backend project, managed end to end by uv: a pyproject.toml, fastapi[standard] as the one dependency that matters, an app/ package with a health endpoint, and `uv run fastapi dev` to run it. Why uv replaces pip + venv + pip-tools, and why the app is a package, not a script. Verified by hitting /health and getting {\"status\":\"ok\"}."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+`api/` — the FastAPI backend, the shared backend every client in FitTrack will call. This first lesson does nothing FitTrack-specific yet: it stands up the Python project the way every later backend module builds on. You install **uv** (one tool for the virtualenv, dependencies, and running code), create the project with a `pyproject.toml`, add **`fastapi[standard]`** as the dependency, and write a minimal `app/` package with a single `/health` endpoint — then run it with `uv run fastapi dev`.
+
+By the end you have a running FastAPI server answering `GET /health`, managed entirely through `uv`, with a project layout that has room for the settings, database, auth, and routers the next modules add. [The repo layout →](/fittrack/en/setup/repo-layout/) then places this `api/` project inside the wider FitTrack repo alongside the two clients.
+
+## Why
+
+Python's tooling has historically been a pile of separate programs — `python -m venv` for the environment, `pip` to install, `pip freeze`/`pip-tools` to pin, `pyenv` for versions — each with its own state to keep in sync. **uv** collapses all of that into one fast tool. `uv add fastapi` resolves the dependency, writes it to `pyproject.toml`, updates a lockfile (`uv.lock`), and installs it into a project-local virtualenv it created and manages for you. `uv run <cmd>` runs a command inside that environment without you ever activating it by hand. The result is that the project's exact dependency set is described in two files anyone can reproduce with a single `uv sync`, and there's no "did I activate the venv?" step to forget.
+
+`fastapi[standard]` is the one dependency worth installing on day one. The `[standard]` extra pulls in **Uvicorn** (the ASGI server that actually runs the app), the **`fastapi` CLI** (`fastapi dev` for hot-reload development, `fastapi run` for production), and the common extras like `python-multipart` and the `httpx`-based test client. You get a batteries-included FastAPI without hand-picking five sub-packages.
+
+And the app is a **package** (`app/`), not a single `main.py` script, from the very first line. A one-file API is fine until it isn't — and FitTrack's backend will grow settings, a database layer, auth dependencies, and a router per resource. Starting as a package means each of those lands in its own module (`app/config.py`, `app/db.py`, `app/auth.py`, `app/routers/…`) instead of a 500-line `main.py` you later have to untangle. `app/main.py` stays small: it creates the `FastAPI()` application and wires routers into it, nothing more.
+
+## Pros & cons
+
+**uv** vs. **pip + venv (+ pip-tools or Poetry)**
+
+- **Pros:** one tool instead of three or four, dramatically faster installs and resolves, an automatically-managed project virtualenv (no manual `activate`), a real lockfile for reproducible installs, and it can install and pin the Python version itself — so a fresh clone is `uv sync` and nothing else.
+- **Cons:** it's newer than pip/Poetry, so some CI images, editors, or corporate mirrors may need a small setup step; and a team already fluent in an existing tool pays a (small) switching cost. Neither outweighs the single-tool simplicity for a new project.
+
+**`fastapi[standard]` + the `fastapi` CLI** vs. **installing `fastapi` and `uvicorn` separately and running `uvicorn app.main:app`**
+
+- **Pros:** one dependency line gives you the server, the dev CLI with hot reload, and the test client; `fastapi dev` figures out the app object and reload settings for you, which is the smoothest possible getting-started path.
+- **Cons:** the `[standard]` extra installs a few things a minimal deployment might not want (you can drop to bare `fastapi` + `uvicorn` later for a leaner production image); and `fastapi dev`'s conveniences hide details — reload, host, port — that `uvicorn` spells out explicitly, which is worth knowing before you deploy.
+
+## Set it up
+
+### 1. Install uv
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then confirm it's on your path:
+
+```bash
+uv --version
+```
+
+### 2. Create the `api/` project
+
+```bash
+uv init api --package
+cd api
+```
+
+`uv init --package` scaffolds a `pyproject.toml` and a `src`-less package layout. Pin the Python version FitTrack targets:
+
+```bash
+uv python pin 3.12
+```
+
+### 3. Add FastAPI
+
+```bash
+uv add "fastapi[standard]"
+```
+
+This writes the dependency into `pyproject.toml`, creates `uv.lock`, and installs everything into the project's virtualenv. Your `pyproject.toml` now has:
+
+```toml
+[project]
+name = "api"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.115",
+]
+```
+
+### 4. The `app/` package
+
+```python
+# app/__init__.py — marks app/ as a package. Intentionally empty.
+```
+
+```python
+# app/main.py — the FastAPI application. It stays small: create the app,
+# wire in routers (there are none yet), and expose a health check. Every
+# later module adds its piece here or in its own module, not by growing
+# this file.
+from fastapi import FastAPI
+
+app = FastAPI(title="FitTrack API")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Liveness check — no auth, no database, just proof the app is up."""
+    return {"status": "ok"}
+```
+
+Save these as `app/__init__.py` and `app/main.py`.
+
+## Verify
+
+Run the app with the FastAPI dev server:
+
+```bash
+uv run fastapi dev app/main.py
+```
+
+```txt
+INFO   Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO   Application startup complete.
+```
+
+In another terminal, hit the health endpoint:
+
+```bash
+curl -s localhost:8000/health
+```
+
+```json
+{"status":"ok"}
+```
+
+FastAPI also generated interactive API docs from your route — open [http://localhost:8000/docs](http://localhost:8000/docs) and you'll see `GET /health` already listed, with a "Try it out" button. That comes for free from the type hints, and every endpoint you add from here shows up the same way.
+
+Stop the server with `Ctrl-C`. Then prove the project is reproducible from nothing but its manifest — delete the environment and rebuild it:
+
+```bash
+rm -rf .venv && uv sync
+```
+
+`uv sync` reads `pyproject.toml` and `uv.lock`, recreates the virtualenv, and installs the exact locked versions. No output beyond a short summary means success.
+
+Check your understanding:
+
+- What three jobs does `uv` do that previously needed `venv`, `pip`, and a lockfile tool separately? Which file is the source of truth for each?
+- Why start with an `app/` package instead of a single `main.py`? Name two files you already know will land in it later.
+- What does the `[standard]` extra in `fastapi[standard]` add beyond FastAPI itself, and which one lets `fastapi dev` run the server?
+- After `rm -rf .venv && uv sync`, how does uv know the *exact* versions to reinstall, and why does that matter for a teammate cloning the repo?
+
+## Recap
+
+`api/` is a `uv`-managed FastAPI project: `uv init --package` scaffolded it, `uv python pin 3.12` fixed the interpreter, and `uv add "fastapi[standard]"` installed FastAPI plus Uvicorn, the `fastapi` CLI, and the test client — recording everything in `pyproject.toml` and `uv.lock`. The app is an `app/` **package** from the start, with `app/main.py` holding only the `FastAPI()` instance and a `/health` endpoint, leaving room for the config, database, auth, and routers later modules add. `uv run fastapi dev app/main.py` served it with hot reload, `curl /health` returned `{"status":"ok"}`, and the auto-generated `/docs` already listed the route — all reproducible from scratch with `uv sync`. Next, [The repo layout →](/fittrack/en/setup/repo-layout/) puts this `api/` project into the full FitTrack repo, alongside the Flutter and Svelte clients that will call it.

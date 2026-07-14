@@ -1,0 +1,138 @@
+---
+title: The repo layout
+description: "The FitTrack monorepo: api/ (FastAPI), mobile/ (Flutter), web/ (Svelte), and a shared .env — one repository holding the backend and both clients, so the API contract and the apps that consume it evolve together. Why a monorepo here, what each top-level directory owns, and the single .env that seeds every service's config. Verified by the tree and a git status that ignores the right things."
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+The top-level shape of the FitTrack repository — the directories that hold the three things you'll build and the shared configuration that ties them together:
+
+```txt
+fittrack/
+├── api/            # The FastAPI backend (from the last lesson)
+├── mobile/         # The Flutter app (Modules 9–10)
+├── web/            # The Svelte web companion (Module 11)
+├── .env.example    # Documented config every service reads
+├── .gitignore
+└── README.md
+```
+
+This lesson doesn't write much code — it establishes *where things go*, so every later module has an obvious home. `api/` already exists from [The Python toolchain →](/fittrack/en/setup/python-toolchain/); `mobile/` and `web/` are created empty now and filled in later. The one substantive artifact is `.env.example`, the single documented list of every configuration value the backend and clients need.
+
+## Why
+
+FitTrack is deliberately a **monorepo**: one Git repository holding the backend *and* both clients, rather than three separate repos. The whole premise of the project — "build one product for two clients on one shared backend" — is a statement about a **contract** between the API and the apps that consume it. When the backend adds a `weight_kg` field or renames an endpoint, the Flutter and Svelte clients have to change with it. In one repo, that's a single commit that touches `api/` and `mobile/` together, reviewed as one change, and it's impossible for the client to reference an API shape that doesn't exist on the same commit. Split across three repos, the same change is three pull requests and a versioning dance to keep them compatible.
+
+Each top-level directory **owns one deployable thing** and nothing leaks between them:
+
+- `api/` is a self-contained Python project — its own `pyproject.toml`, its own virtualenv. Nothing in `mobile/` or `web/` imports from it; they talk to it only over HTTP.
+- `mobile/` is a self-contained Flutter project — its own `pubspec.yaml`.
+- `web/` is a self-contained SvelteKit project — its own `package.json`.
+
+That isolation is what keeps a monorepo from becoming a tangle: the repo groups the projects, but each still builds, tests, and deploys on its own, exactly as it would in its own repository.
+
+The shared piece is **`.env.example`** — a committed, non-secret template listing every environment variable any part of FitTrack reads, with placeholder values. The real `.env` (with actual Supabase keys) is git-ignored and never committed; `.env.example` is the documentation of *what* must be set. A new contributor copies it to `.env`, fills in their own Supabase credentials, and every service knows where to look. Keeping one canonical list beats each service inventing its own undocumented variables.
+
+## Pros & cons
+
+**A monorepo (backend + both clients together)** vs. **a repository per project**
+
+- **Pros:** an API change and the client changes that depend on it are one atomic commit, reviewed and merged together, so a client can never reference an endpoint shape that isn't present at that commit; one place to clone, one issue tracker, one CI config; shared docs and `.env.example` live with the code they describe.
+- **Cons:** the repo mixes three toolchains (Python, Dart/Flutter, Node), so tooling and CI must be scoped per directory rather than assuming one language; a naive "run all tests" is really three separate test commands; and at very large scale monorepos need dedicated tooling (build graphs, sparse checkouts) that's overkill here but worth knowing exists.
+
+**A single shared `.env` at the repo root** vs. **a separate `.env` inside each project**
+
+- **Pros:** one file to fill in after cloning, one canonical list of every value, and no drift between three near-identical env files; the backend and a local client script can read the same Supabase URL from one place.
+- **Cons:** the frontend and backend don't actually need the *same* variables (the clients need the Supabase URL and anon key; the backend needs the database URL and JWT secret), so one file mixes concerns, and you must be careful that client builds only ever embed the *public* values — never the backend's secrets. FitTrack keeps them in one documented file but is explicit in [Auth (Supabase JWT) →](/fittrack/en/auth/) about which values are safe to ship to a client and which must stay server-side.
+
+## Set it up
+
+### 1. Create the client directories
+
+From the repo root (the `fittrack/` folder containing `api/`):
+
+```bash
+mkdir mobile web
+```
+
+They stay empty until [Flutter — Foundation →](/fittrack/en/flutter-foundation/) and [Svelte Web Companion →](/fittrack/en/svelte-companion/); creating them now just fixes the shape.
+
+### 2. `.env.example`
+
+```txt
+# --- Supabase (from your Supabase project settings) ---
+# Public values — safe to embed in client apps:
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+
+# Server-only values — NEVER ship these to a client:
+SUPABASE_JWT_SECRET=your-jwt-secret
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:54322/postgres
+
+# --- API ---
+API_HOST=0.0.0.0
+API_PORT=8000
+```
+
+Save this as `.env.example` at the repo root. The `DATABASE_URL` above points at the **local** Supabase Postgres (port `54322`, the default for `supabase start`) — [The Supabase project →](/fittrack/en/setup/supabase-project/) sets that up and explains where each value comes from. The `postgresql+asyncpg://` scheme is the async driver the FastAPI backend uses; [FastAPI Foundation →](/fittrack/en/fastapi/) wires it in.
+
+### 3. `.gitignore`
+
+```txt
+# Secrets
+.env
+
+# Python / api
+api/.venv/
+__pycache__/
+
+# Flutter / mobile
+mobile/.dart_tool/
+mobile/build/
+
+# Node / web
+web/node_modules/
+web/.svelte-kit/
+web/build/
+```
+
+Save this as `.gitignore` at the repo root. The critical line is the first: **`.env` is never committed** — only `.env.example` is. Everything else is per-toolchain build output.
+
+## Verify
+
+Confirm the shape from the repo root:
+
+```bash
+ls -1
+```
+
+```txt
+.env.example
+.gitignore
+README.md
+api
+mobile
+web
+```
+
+Copy the template to a real `.env` you'll fill in next lesson, and confirm Git ignores it:
+
+```bash
+cp .env.example .env
+git status --short
+```
+
+`.env` must **not** appear in the output — if it does, the `.gitignore` line isn't matching. `.env.example`, on the other hand, should be tracked. That single distinction — template committed, real secrets ignored — is the whole point of the check.
+
+Check your understanding:
+
+- Why does putting the backend and both clients in one repo make an API-plus-client change safer than three coordinated pull requests across three repos?
+- `api/`, `mobile/`, and `web/` each build independently. What's the only channel through which `mobile/` and `web/` interact with `api/`?
+- Which values in `.env.example` are safe to embed in a shipped client app, and which must never leave the server? What would go wrong if a secret ended up in a client build?
+- After `cp .env.example .env`, why must `git status` show `.env` as *ignored*, not *untracked-and-ready-to-commit*?
+
+## Recap
+
+The FitTrack repo is a **monorepo**: `api/` (the FastAPI backend), `mobile/` (Flutter, later), and `web/` (Svelte, later), each a self-contained project that builds on its own and talks to the others only over HTTP. One repository holds all three because the project is fundamentally about the *contract* between the API and its two clients — a change to that contract is one atomic commit across `api/` and a client, not a cross-repo coordination problem. A single root `.env.example` documents every configuration value FitTrack reads, split clearly into public values (safe in clients) and server-only secrets; the real `.env` is git-ignored and never committed, verified by `git status` refusing to show it. Next, [The Supabase project →](/fittrack/en/setup/supabase-project/) provisions the managed platform behind FitTrack and fills in the real values these placeholders stand for.
