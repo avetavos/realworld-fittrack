@@ -1,0 +1,233 @@
+---
+title: Project and state
+description: "mobile/ — the Flutter app, FitTrack's primary client. flutter create the project, add flutter_riverpod for state and go_router for navigation, wrap the app in a ProviderScope, lay lib/ out into feature folders, and wire a router that later modules hang screens on. Why Riverpod over setState/InheritedWidget and go_router over imperative Navigator. Verified by flutter analyze, flutter test, and a running app landing on the router's first route."
+sidebar:
+  order: 1
+---
+
+## What we're building
+
+`mobile/` — the Flutter app, and FitTrack's **primary, mobile-first client**. This lesson does nothing FitTrack-specific with data yet: it stands up the Flutter project the two client modules build on. You run `flutter create` inside the `mobile/` directory the [repo layout →](/fittrack/en/setup/repo-layout/) reserved, add **`flutter_riverpod`** for state management and **`go_router`** for navigation, wrap the whole app in a **`ProviderScope`**, lay `lib/` out into feature folders instead of one giant file, and define a router the next lessons attach the sign-in and tracking screens to.
+
+By the end you have a Flutter app that analyzes clean, passes its first widget test, and runs to a placeholder home route — with the plumbing (a provider container at the root, a router provider, a feature-first folder layout) that the Supabase auth and API-client lessons plug straight into.
+
+## Why
+
+Two decisions define how every later screen is written: **how state flows** and **how navigation works**.
+
+**State — Riverpod.** A workout tracker is full of shared, asynchronous state: the current auth session, the exercise catalog, the workout being logged, progress stats fetched from the API. Flutter's built-in `setState` keeps state trapped inside one widget; passing it down through constructors gets unwieldy fast, and `InheritedWidget` is verbose to write by hand. **Riverpod** gives you *providers* — declarative, testable units of state and logic that any widget can read with `ref.watch(...)` and that rebuild only the widgets that actually depend on them. Crucially, a provider isn't tied to a `BuildContext`, so the API client and auth logic live as plain providers you can unit-test without pumping a widget. Providers also *compose*: the API-client provider will read the auth provider for the current token, and Riverpod wires that dependency for you.
+
+**Navigation — go_router.** FitTrack has real navigation needs: an auth gate (signed-out users see sign-in, signed-in users see the app), named routes to push a workout-logging screen, and eventually deep links. Flutter's imperative `Navigator.push` scatters route decisions across the codebase and makes "redirect to sign-in when the session is null" awkward. **go_router** is declarative: you describe the route table once, and a single `redirect` callback (added in the next lesson) can gate the whole app on auth state. It also plays naturally with Riverpod — the router itself is a provider that can watch the session.
+
+**Structure — feature-first.** `lib/main.dart` stays tiny: it installs the `ProviderScope` and hands off to a `MaterialApp.router`. Everything else lives under `lib/src/`, grouped by *feature* (`features/auth/`, `features/workouts/`) with a `core/` folder for cross-cutting pieces (the router, the API client, config). A feature-first layout means a single feature's UI, state, and models sit together, and the app scales without a 2000-line `main.dart`.
+
+## Pros & cons
+
+**Riverpod** vs. **plain `setState` / `InheritedWidget` (or the older `provider` package)**
+
+- **Pros:** state lives outside the widget tree, so it's shared without prop-drilling and unit-testable without a widget; providers rebuild only their dependents (fine-grained, performant updates); compile-time safety — a missing provider is a build error, not a runtime `null`; and providers compose, so the API client can depend on the auth session declaratively.
+- **Cons:** it's a new mental model (providers, `ref`, `WidgetRef`) with real up-front learning cost; a tiny app that never shares state would be lighter with `setState`; and the ecosystem has several flavours (`Notifier`, `AsyncNotifier`, optional code-gen) you must choose between. For an app with cross-screen auth, catalog, and API state, that structure pays for itself immediately.
+
+**go_router (declarative routing)** vs. **imperative `Navigator.push` / `Navigator.pop`**
+
+- **Pros:** one central route table instead of route logic sprinkled through widgets; a single `redirect` callback expresses the whole auth gate; first-class deep-link and URL support (which the Svelte companion gets for free but mobile has to opt into); and it integrates with Riverpod so the router can react to session changes.
+- **Cons:** more ceremony for a screen or two, where a bare `Navigator.push` would do; the redirect/refresh model has edge cases worth understanding before you lean on it; and it's a dependency to keep current. For an app that must gate on auth and grow a handful of screens, the declarative table wins.
+
+## Set it up
+
+### 1. `flutter create` the app
+
+From the repo root (the `fittrack/` folder holding `api/`), create the app **into** the existing `mobile/` directory:
+
+```bash
+flutter create --org com.avetavos.fittrack --project-name fittrack mobile
+cd mobile
+```
+
+`--org` sets the reverse-DNS bundle identifier (used for iOS/Android packaging and, later, the OAuth redirect scheme); `--project-name` names the Dart package. Confirm the toolchain is healthy:
+
+```bash
+flutter doctor
+```
+
+### 2. Add the dependencies
+
+```bash
+flutter pub add flutter_riverpod go_router
+```
+
+This writes them into `pubspec.yaml`. The relevant lines:
+
+```yaml
+# pubspec.yaml
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.6.1  # state management
+  go_router: ^14.6.2        # declarative routing
+```
+
+### 3. Lay out `lib/src/`
+
+Replace Flutter's demo counter with a feature-first structure. Create these folders and files:
+
+```txt
+mobile/lib/
+├── main.dart              # ProviderScope + MaterialApp.router — stays tiny
+└── src/
+    ├── router.dart        # the go_router route table (a provider)
+    ├── core/              # cross-cutting: config, the API client (later lessons)
+    └── features/
+        ├── auth/          # sign-in / session  (next lesson)
+        └── workouts/      # logging + history   (Module 10)
+            └── home_screen.dart
+```
+
+```bash
+mkdir -p lib/src/core lib/src/features/auth lib/src/features/workouts
+```
+
+### 4. A first screen — `lib/src/features/workouts/home_screen.dart`
+
+A placeholder the router can land on. It's a `ConsumerWidget` (Riverpod's widget base) from the start, so wiring in providers later is a one-line change:
+
+```dart
+// lib/src/features/workouts/home_screen.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+/// The app's landing screen after sign-in. For now it's a placeholder;
+/// Module 10 turns this into the workout list. It's already a
+/// ConsumerWidget so it can `ref.watch(...)` providers without a rewrite.
+class HomeScreen extends ConsumerWidget {
+  const HomeScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('FitTrack')),
+      body: const Center(child: Text('Your workouts will appear here.')),
+    );
+  }
+}
+```
+
+### 5. The router — `lib/src/router.dart`
+
+Expose the `GoRouter` as a Riverpod **provider**. That matters: in the next lesson the same provider will `ref.watch` the auth session and add a `redirect`, without touching `main.dart`.
+
+```dart
+// lib/src/router.dart
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import 'features/workouts/home_screen.dart';
+
+/// The app's route table, exposed as a provider so it can later depend on
+/// auth state (a `redirect` that watches the session is added next lesson).
+final routerProvider = Provider<GoRouter>((ref) {
+  return GoRouter(
+    initialLocation: '/',
+    routes: [
+      GoRoute(
+        path: '/',
+        name: 'home',
+        builder: (context, state) => const HomeScreen(),
+      ),
+    ],
+  );
+});
+```
+
+### 6. Wire it up — `lib/main.dart`
+
+`main.dart` does two things and stops: install the `ProviderScope` (Riverpod's root container that holds every provider's state) and drive a `MaterialApp.router` from the router provider.
+
+```dart
+// lib/main.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'src/router.dart';
+
+void main() {
+  // ProviderScope stores the state of all providers — it must sit above
+  // every widget that reads one, so it wraps the entire app.
+  runApp(const ProviderScope(child: FitTrackApp()));
+}
+
+class FitTrackApp extends ConsumerWidget {
+  const FitTrackApp({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final router = ref.watch(routerProvider);
+    return MaterialApp.router(
+      title: 'FitTrack',
+      theme: ThemeData(colorSchemeSeed: const Color(0xFF009688)),
+      routerConfig: router,
+    );
+  }
+}
+```
+
+## Verify
+
+Fetch packages and run the static analyzer — Riverpod and go_router both lean on it to catch mistakes early:
+
+```bash
+flutter pub get
+flutter analyze
+```
+
+```txt
+Analyzing mobile...
+No issues found!
+```
+
+Replace the default `test/widget_test.dart` (it references the deleted counter demo) with one that pumps the app inside a `ProviderScope` and asserts the home screen renders:
+
+```dart
+// test/widget_test.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:fittrack/main.dart';
+
+void main() {
+  testWidgets('app boots to the home screen', (tester) async {
+    await tester.pumpWidget(const ProviderScope(child: FitTrackApp()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('FitTrack'), findsOneWidget);
+    expect(find.text('Your workouts will appear here.'), findsOneWidget);
+  });
+}
+```
+
+```bash
+flutter test
+```
+
+```txt
+00:02 +1: All tests passed!
+```
+
+Finally, run it on a device or simulator and confirm it lands on the home route:
+
+```bash
+flutter run
+```
+
+The app opens to an app bar reading **FitTrack** and the placeholder body. A clean `flutter analyze`, a green `flutter test`, and a running app on the `/` route mean the foundation — providers at the root, a router as a provider, a feature-first layout — is in place.
+
+Check your understanding:
+
+- Why expose the `GoRouter` as a Riverpod *provider* instead of constructing it inline in `MaterialApp.router`? What does that let the next lesson do without editing `main.dart`?
+- `ProviderScope` wraps the entire app in both `main()` and the widget test. What breaks if a widget tries to `ref.watch` a provider that has no `ProviderScope` above it?
+- Name two kinds of state in FitTrack that are shared across screens and would be awkward to manage with `setState` alone.
+- The home screen is a `ConsumerWidget` even though it reads no providers yet. Why start it that way rather than as a plain `StatelessWidget`?
+
+## Recap
+
+`mobile/` is now a `flutter create`-scaffolded app with the two decisions that shape every later screen made: **Riverpod** for state (a `ProviderScope` at the root, screens as `ConsumerWidget`s) and **go_router** for navigation (the route table exposed as `routerProvider` so it can later gate on auth). `lib/main.dart` stays tiny — scope plus `MaterialApp.router` — and everything else lives feature-first under `lib/src/`, with `core/` reserved for the router and the API client. `flutter analyze` is clean, `flutter test` passes a boot-to-home widget test, and `flutter run` lands on the `/` route. Next, [Supabase auth →](/fittrack/en/flutter-foundation/supabase-auth/) initializes `supabase_flutter`, builds a sign-in/sign-up screen, exposes the session as a provider, and turns `routerProvider` into a real auth gate.

@@ -1,0 +1,244 @@
+---
+title: The API client
+description: "A typed Dio client for the FastAPI backend: a Riverpod provider builds Dio with the API base URL, an interceptor reads the current Supabase session's accessToken and attaches it as Authorization: Bearer on every request, and Dio errors are mapped to a domain ApiException. Typed methods wrap the contract's endpoints (GET /me, GET /exercises, POST /workouts, GET /progress/*). Why one client owns the token and base URL. Verified by a signed-in GET /me returning the profile."
+sidebar:
+  order: 3
+---
+
+## What we're building
+
+The single piece that lets the Flutter app talk to FitTrack's backend: a **typed API client** built on **Dio**, exposed as a Riverpod provider. It knows the API's base URL, and — this is the crux — an **interceptor** pulls the current **Supabase session's `accessToken`** and attaches it as an `Authorization: Bearer` header on *every* request, so the [FastAPI backend can verify the JWT →](/fittrack/en/auth/) and identify the user. It also maps Dio's transport errors into a clean domain `ApiException` the UI can show.
+
+By the end you have a `FitTrackApi` class with typed methods wrapping the [contract's endpoints](/fittrack/en/workouts/) — `GET /me`, `GET /exercises`, `POST /workouts`, `GET /progress/*` — and an `apiProvider` any screen can `ref.watch`. The [tracking module →](/fittrack/en/flutter-tracking/) then builds its logging and history screens entirely on this one client, never touching HTTP details again.
+
+## Why
+
+Every authenticated call to FastAPI needs the same two things: the right **base URL** and a valid **`Authorization: Bearer <jwt>`** header. Scattering that across screens — reading the session, formatting the header, remembering the URL — is the exact repetition that rots a codebase. So FitTrack centralizes it in **one client** that owns both concerns, and every feature calls typed methods (`api.listExercises()`) instead of raw HTTP.
+
+**Dio** earns its place over the bare `http` package because of **interceptors**: middleware that runs on every request. A single `onRequest` interceptor reads `sessionProvider`'s current `accessToken` and stamps the header, so no call site ever thinks about auth again. Reading the token *inside* the interceptor — not once at construction — matters: Supabase silently refreshes the JWT in the background, and the interceptor always grabs the *current* one, so a request never carries a stale token. Dio also gives structured `DioException`s and a base-URL/timeout config in one place.
+
+Wrapping the client in a **Riverpod provider** keeps it consistent with the rest of the app and makes it composable: `apiProvider` depends on `supabaseProvider` (for the token) the same declarative way every other provider does, and in tests you can override `apiProvider` with a fake so widget tests never hit the network. Finally, the client translates `DioException` into a small **`ApiException`** with a status code and message — so the UI reacts to *"401 unauthorized"* or *"404 not found"*, not to Dio's transport-level types leaking into your widgets.
+
+## Pros & cons
+
+**Dio with an auth interceptor** vs. **the `http` package, attaching the header at each call site**
+
+- **Pros:** the token and base URL are applied in exactly one place, so no call can forget them; the interceptor reads the *live* (possibly just-refreshed) token per request; and Dio bundles base-URL config, timeouts, structured errors, and interceptors for logging/retry. New endpoints are one typed method with zero auth boilerplate.
+- **Cons:** Dio is a heavier dependency than `http` and its own API to learn; interceptor ordering and error mapping have a learning curve; and for an app that made one or two unauthenticated calls, `http` would be lighter. For an app where *every* call is authenticated, the interceptor pays for itself immediately.
+
+**One shared client owning base URL + token** vs. **per-feature clients or ad-hoc requests**
+
+- **Pros:** a single source of truth for how the app reaches the backend — change the base URL, timeout, or auth scheme once; uniform error handling; and one provider to override in tests.
+- **Cons:** a central client can accrete unrelated methods and become a grab-bag if left undisciplined (mitigated by keeping the *typed methods* grouped by resource, or splitting into per-resource wrappers over the same Dio); and everything depends on it, so a change ripples widely. The consistency is worth that coupling here.
+
+## Set it up
+
+### 1. Add Dio
+
+```bash
+flutter pub add dio
+```
+
+```yaml
+# pubspec.yaml (added)
+dependencies:
+  dio: ^5.7.0
+```
+
+### 2. The base URL — extend `lib/src/core/env.dart`
+
+The API base URL differs per platform: an Android emulator reaches your host machine at `10.0.2.2`, an iOS simulator at `localhost`. Pass it as a build-time define like the Supabase values:
+
+```dart
+// lib/src/core/env.dart (add to the Env class)
+  // Android emulator → http://10.0.2.2:8000, iOS sim → http://localhost:8000,
+  // a device on your LAN → http://<your-ip>:8000. Passed via --dart-define.
+  static const apiBaseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'http://localhost:8000',
+  );
+```
+
+### 3. A domain error — `lib/src/core/api/api_exception.dart`
+
+```dart
+// lib/src/core/api/api_exception.dart
+/// A backend error the UI can act on, decoupled from Dio's transport types.
+class ApiException implements Exception {
+  const ApiException(this.statusCode, this.message);
+
+  final int? statusCode;
+  final String message;
+
+  bool get isUnauthorized => statusCode == 401;
+  bool get isNotFound => statusCode == 404;
+
+  @override
+  String toString() => 'ApiException($statusCode): $message';
+}
+```
+
+### 4. The client — `lib/src/core/api/fittrack_api.dart`
+
+`FitTrackApi` wraps a configured `Dio`. The interceptor reads the token via a callback so the client depends on *"how to get the current token"*, not on Supabase directly — which keeps it trivial to test.
+
+```dart
+// lib/src/core/api/fittrack_api.dart
+import 'package:dio/dio.dart';
+
+import 'api_exception.dart';
+
+/// Returns the current Supabase JWT, or null when signed out.
+typedef TokenReader = String? Function();
+
+class FitTrackApi {
+  FitTrackApi({required String baseUrl, required TokenReader readToken})
+      : _dio = Dio(BaseOptions(
+          baseUrl: baseUrl,
+          connectTimeout: const Duration(seconds: 10),
+          receiveTimeout: const Duration(seconds: 10),
+        )) {
+    // Runs on every request: attach the *current* token, freshly read.
+    _dio.interceptors.add(InterceptorsWrapper(
+      onRequest: (options, handler) {
+        final token = readToken();
+        if (token != null) {
+          options.headers['Authorization'] = 'Bearer $token';
+        }
+        handler.next(options);
+      },
+    ));
+  }
+
+  final Dio _dio;
+
+  // --- Profile (M4) ---
+  Future<Map<String, dynamic>> getMe() async =>
+      _get('/me') as Map<String, dynamic>;
+
+  // --- Exercises (M6) ---
+  Future<List<dynamic>> listExercises() async =>
+      _get('/exercises') as List<dynamic>;
+
+  // --- Workouts (M7): typed models arrive in Module 10 ---
+  Future<Map<String, dynamic>> createWorkout(
+          Map<String, dynamic> body) async =>
+      _post('/workouts', body) as Map<String, dynamic>;
+
+  Future<List<dynamic>> listWorkouts() async =>
+      _get('/workouts') as List<dynamic>;
+
+  // --- Progress (M8) ---
+  Future<List<dynamic>> progressRecords() async =>
+      _get('/progress/records') as List<dynamic>;
+
+  Future<List<dynamic>> progressVolume({int weeks = 8}) async =>
+      _get('/progress/volume', query: {'weeks': weeks}) as List<dynamic>;
+
+  // --- Shared request plumbing + error mapping ---
+  Future<dynamic> _get(String path, {Map<String, dynamic>? query}) =>
+      _send(() => _dio.get(path, queryParameters: query));
+
+  Future<dynamic> _post(String path, Object body) =>
+      _send(() => _dio.post(path, data: body));
+
+  Future<dynamic> _send(Future<Response> Function() call) async {
+    try {
+      final res = await call();
+      return res.data;
+    } on DioException catch (e) {
+      final status = e.response?.statusCode;
+      final detail = e.response?.data is Map
+          ? (e.response!.data['detail']?.toString() ?? e.message)
+          : e.message;
+      throw ApiException(status, detail ?? 'Network error');
+    }
+  }
+}
+```
+
+### 5. The provider — `lib/src/core/api/api_providers.dart`
+
+Wire the client to config and the session. It watches `supabaseProvider` and hands the interceptor a callback that reads `currentSession?.accessToken` on demand.
+
+```dart
+// lib/src/core/api/api_providers.dart
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../env.dart';
+import '../../features/auth/auth_providers.dart';
+import 'fittrack_api.dart';
+
+/// The one API client for the whole app. It reads the *current* Supabase
+/// access token per request, so it always sends a fresh, valid JWT.
+final apiProvider = Provider<FitTrackApi>((ref) {
+  final supabase = ref.watch(supabaseProvider);
+  return FitTrackApi(
+    baseUrl: Env.apiBaseUrl,
+    readToken: () => supabase.auth.currentSession?.accessToken,
+  );
+});
+```
+
+## Verify
+
+Make sure the backend is running (`uv run fastapi dev app/main.py` in `api/`, from [the FastAPI modules](/fittrack/en/fastapi/)) and reachable at your `API_BASE_URL`. Analyze first:
+
+```bash
+flutter analyze
+```
+
+```txt
+No issues found!
+```
+
+Add a temporary probe to the home screen to prove the token round-trips. `GET /me` requires a valid JWT — a `200` with your profile means the interceptor attached the token and FastAPI verified it:
+
+```dart
+// temporary, in HomeScreen.build — remove after checking
+ElevatedButton(
+  onPressed: () async {
+    try {
+      final me = await ref.read(apiProvider).getMe();
+      debugPrint('GET /me → $me');
+    } on ApiException catch (e) {
+      debugPrint('API error: $e');
+    }
+  },
+  child: const Text('Test /me'),
+),
+```
+
+Run the app signed in, passing all three defines, and tap the button:
+
+```bash
+flutter run \
+  --dart-define=SUPABASE_URL=https://your-project-ref.supabase.co \
+  --dart-define=SUPABASE_ANON_KEY=your-anon-key \
+  --dart-define=API_BASE_URL=http://10.0.2.2:8000
+```
+
+```txt
+flutter: GET /me → {id: 3f2a…, display_name: , created_at: 2026-07-14T…}
+```
+
+A profile in the log confirms the whole chain: Supabase session → interceptor → `Authorization: Bearer` → FastAPI JWT verification → your row. Sign out and tap again and you'll see `API error: ApiException(401): …` — proof the backend really is gating on the token, not trusting the client. Remove the probe, then keep the guard green:
+
+```bash
+flutter test
+```
+
+```txt
+00:02 +1: All tests passed!
+```
+
+Check your understanding:
+
+- The interceptor reads the token *inside* `onRequest` rather than capturing it once when the client is built. Why does that matter given Supabase refreshes the JWT in the background?
+- `FitTrackApi` takes a `TokenReader` callback instead of importing Supabase directly. What does that decoupling buy you when writing tests for the client?
+- A request fails with a `DioException` carrying a 404. What does the client turn that into before it reaches the UI, and why not let the `DioException` propagate?
+- Why does `apiProvider` depend on `supabaseProvider` rather than each screen constructing its own `FitTrackApi`?
+
+## Recap
+
+The Flutter app now has one typed gateway to FastAPI: a **Dio**-based `FitTrackApi`, exposed as `apiProvider`, that owns the base URL and — through an `onRequest` interceptor reading the live Supabase `accessToken` — stamps `Authorization: Bearer` on every request so the [backend can verify the JWT](/fittrack/en/auth/). Transport errors become a domain `ApiException` with a status code, and typed methods wrap the contract's endpoints (`GET /me`, `GET /exercises`, `POST /workouts`, `GET /progress/*`). A signed-in `GET /me` returned the profile, and a signed-out call returned a clean `401`, proving the token round-trips end to end. With auth, state, routing, and a backend client all in place, the foundation is done. Next, [Flutter — Tracking →](/fittrack/en/flutter-tracking/) builds the real product on top of this client: logging workouts and browsing history and progress.

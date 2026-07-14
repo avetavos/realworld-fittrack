@@ -1,0 +1,343 @@
+---
+title: Supabase auth
+description: "ต่อสาย Flutter app เข้ากับ Supabase Auth: initialize supabase_flutter ด้วย SUPABASE_URL และ anon key (ส่งตอน build ด้วย --dart-define), สร้างหน้า sign-in / sign-up, expose auth session เป็น Riverpod provider จาก onAuthStateChange และเปลี่ยน router ให้เป็น auth gate ที่ redirect คนที่ยังไม่ sign-in ไป /sign-in ทำไม client เป็นเจ้าของ auth และ FastAPI แค่ verify JWT ตรวจสอบด้วยการ sign up, ลงที่ home และ session provider ที่รอดข้าม restart"
+sidebar:
+  order: 2
+---
+
+## What we're building
+
+authentication สำหรับ Flutter app ในแบบฉบับของ FitTrack: client คุยกับ **Supabase Auth** ตรง ๆ และ FastAPI backend ไม่เคยเห็น password เลย — มันแค่ [verify JWT →](/fittrack/th/auth/) ที่ Supabase ออกให้ ในบทนี้คุณ initialize **`supabase_flutter`** ด้วย project URL และ anon key, สร้าง **หน้า sign-in / sign-up** รวมในหน้าเดียว, expose **session ปัจจุบันเป็น Riverpod provider** ที่ขับด้วย stream `onAuthStateChange` ของ Supabase และอัปเกรด `routerProvider` จากบทที่แล้วให้เป็น **auth gate** จริงที่ส่งคนที่ยังไม่ sign-in ไป `/sign-in` และส่งคนอื่นทุกคนเข้าตัวแอป
+
+พอจบบท ผู้ใช้ใหม่ sign up ได้ เด้งตรงเข้า home screen ปิดแล้วเปิดแอปใหม่ก็ยัง sign-in อยู่ และ sign out กลับมาที่ gate ได้ — โดยมี session พร้อมเป็น provider ที่ [API client →](/fittrack/th/flutter-foundation/api-client/) จะอ่านในบทถัดไปเพื่อแนบ JWT ไปกับทุก request ที่ยิงไป backend
+
+## Why
+
+architecture ของ FitTrack วาง auth ไว้ที่ **ฝั่ง client** อย่างตั้งใจ client ทั้งสอง — Flutter และ Svelte companion — sign in ผ่าน SDK ของ Supabase แล้วได้ **JWT** มา จากนั้นเรียก FastAPI พร้อมแนบ token นั้นใน header `Authorization: Bearer` แล้ว FastAPI *verify* token กับ shared secret แทนที่จะจัดการ credential เอง การแยกแบบนั้นคือหัวใจทั้งหมด: Supabase เป็นเจ้าของส่วนที่ยากและ sensitive ด้าน security (การ hash password, ยืนยัน email, refresh session, หมุน token) ส่วน Python backend อยู่เป็น API gate ที่ pure และ stateless งานของ Flutter app ตรงนี้จึงมีแค่ขอและถือ session ที่ valid ไว้เท่านั้น
+
+`supabase_flutter` ทำเรื่องนั้นให้เกือบสำเร็จรูป `Supabase.initialize(...)` ตั้งค่า client และที่สำคัญคือ **persist session ลง disk** แล้ว refresh มันอัตโนมัติ — ผู้ใช้ที่ sign in เมื่อวานจึงยัง sign-in อยู่วันนี้โดยไม่ต้องกรอกอะไรใหม่ `supabase.auth.onAuthStateChange` เป็น **stream** ที่ emit ทุกครั้งที่ session เปลี่ยน (sign in, sign out, token refresh) stream นั้นเข้ากับ `StreamProvider` ของ Riverpod ได้อย่างลงตัว: wrap ครั้งเดียว แล้ว widget ไหน — หรือ router — ก็ `ref.watch` auth state สด ๆ แล้ว rebuild ตอนมันพลิกได้
+
+**ค่า config** (`SUPABASE_URL`, `SUPABASE_ANON_KEY`) มาจาก [`.env.example`](/fittrack/th/setup/repo-layout/) ตัวเดียวกับที่ backend อ่าน แต่ Flutter อ่าน `.env` ของ server ตอน runtime ไม่ได้ แทนที่จะทำแบบนั้น คุณส่งมันตอน **build** ด้วย `--dart-define` แล้วอ่านด้วย `String.fromEnvironment` ทั้งคู่เป็นค่า **public** — anon key ตั้งใจให้ ship ไปกับ client อยู่แล้ว (row-level security ปกป้องข้อมูล ไม่ใช่ความลับ) — เรื่องนี้จึงปลอดภัย `SUPABASE_JWT_SECRET` และ `DATABASE_URL` ของ backend ไม่เคยเข้าใกล้แอปเลย
+
+## Pros & cons
+
+**Client-side Supabase Auth (SDK signs in, FastAPI verifies the JWT)** vs. **the backend owning login (FastAPI issues its own sessions)**
+
+- **Pros:** Supabase จัดการ hash password, ยืนยัน email, persist session และ refresh token — ซึ่งคุณไม่ต้องสร้างหรือทำให้ปลอดภัยเองเลย; backend อยู่ stateless และแค่ verify token; และ client ทั้งสองใช้ auth path เดียวกันเป๊ะ
+- **Cons:** ตอนนี้ auth logic อยู่สองที่ (client SDK และ FastAPI verifier) ที่ต้องเห็นตรงกันเรื่อง JWT secret กับ audience; คุณพึ่งพา availability ของ Supabase ในการ login; และคุณต้องมีวินัยว่ามีแต่ค่า *public* (URL, anon key) เท่านั้นที่ไปถึง client สำหรับโปรเจกต์นี้ งาน security ที่ยกภาระออกไปได้คุ้มค่ากว่าต้นทุนการประสานงานมาก
+
+**Passing config with `--dart-define` (compile-time)** vs. **bundling a `.env` file into the app with a runtime loader**
+
+- **Pros:** ไม่มีไฟล์ secret ที่ ship อยู่ใน app bundle; ค่าถูก bake ต่อ build ดังนั้น dev/staging/prod ต่างกันแค่ที่ build flag; และ `String.fromEnvironment` ถูก const-evaluate ต้นทุน runtime เป็นศูนย์ ไม่มี dependency เพิ่ม
+- **Cons:** คุณต้องจำที่จะส่ง define ทุกครั้งที่ `flutter run`/`build` (ลืม flag ก็ได้ string ว่าง) และคำสั่งยาว ๆ พลาดง่าย — มักแก้ด้วย JSON แบบ `--dart-define-from-file` หรือ IDE launch config สำหรับค่าที่เป็น public อยู่แล้ว การแลกนี้เป็นเรื่องสุขอนามัยของ build ไม่ใช่ความลับ
+
+## Set it up
+
+### 1. Add the dependency
+
+```bash
+flutter pub add supabase_flutter
+```
+
+```yaml
+# pubspec.yaml (added)
+dependencies:
+  supabase_flutter: ^2.8.0
+```
+
+### 2. Read config — `lib/src/core/env.dart`
+
+```dart
+// lib/src/core/env.dart
+/// Build-time configuration, supplied via --dart-define. These are the
+/// PUBLIC Supabase values (safe to embed in a client). The backend's
+/// JWT secret and database URL are server-only and never appear here.
+class Env {
+  static const supabaseUrl = String.fromEnvironment('SUPABASE_URL');
+  static const supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
+
+  /// Fail fast at startup if a build forgot its --dart-define flags.
+  static void assertConfigured() {
+    assert(
+      supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty,
+      'Missing SUPABASE_URL / SUPABASE_ANON_KEY. Pass them with --dart-define.',
+    );
+  }
+}
+```
+
+### 3. Initialize Supabase — update `lib/main.dart`
+
+`Supabase.initialize` เป็น async ดังนั้น `main` กลายเป็น `async` และมั่นใจว่า Flutter bindings พร้อมก่อน:
+
+```dart
+// lib/main.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'src/core/env.dart';
+import 'src/router.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  Env.assertConfigured();
+
+  // Sets up the client and restores/refreshes any persisted session,
+  // so a returning user is already signed in before the first frame.
+  await Supabase.initialize(
+    url: Env.supabaseUrl,
+    anonKey: Env.supabaseAnonKey,
+  );
+
+  runApp(const ProviderScope(child: FitTrackApp()));
+}
+
+class FitTrackApp extends ConsumerWidget {
+  const FitTrackApp({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final router = ref.watch(routerProvider);
+    return MaterialApp.router(
+      title: 'FitTrack',
+      theme: ThemeData(colorSchemeSeed: const Color(0xFF009688)),
+      routerConfig: router,
+    );
+  }
+}
+```
+
+### 4. Expose the session — `lib/src/features/auth/auth_providers.dart`
+
+provider เล็ก ๆ ตัวหนึ่งสำหรับ Supabase client และ `StreamProvider` ครอบ `onAuthStateChange` เพื่อให้ส่วนที่เหลือของแอป watch auth แบบ reactive
+
+```dart
+// lib/src/features/auth/auth_providers.dart
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+/// The Supabase client — one instance, reachable as a provider so screens
+/// and other providers depend on it explicitly (and can override it in tests).
+final supabaseProvider = Provider<SupabaseClient>(
+  (ref) => Supabase.instance.client,
+);
+
+/// The live auth state. Emits on sign-in, sign-out, and token refresh.
+final authStateProvider = StreamProvider<AuthState>((ref) {
+  return ref.watch(supabaseProvider).auth.onAuthStateChange;
+});
+
+/// The current session (or null). Derived synchronously from the stream,
+/// seeded with whatever session was restored at startup.
+final sessionProvider = Provider<Session?>((ref) {
+  final client = ref.watch(supabaseProvider);
+  // Rebuild whenever auth state changes...
+  ref.watch(authStateProvider);
+  // ...and read the current value (also correct on the very first frame).
+  return client.auth.currentSession;
+});
+```
+
+### 5. The sign-in / sign-up screen — `lib/src/features/auth/sign_in_screen.dart`
+
+หน้าจอเดียว สองโหมด `signInWithPassword` กับ `signUp` คือ SDK call สองตัวเท่านั้น; `onAuthStateChange` จัดการ redirect ให้ หน้าจอนี้จึงไม่ navigate เองตอนสำเร็จ
+
+```dart
+// lib/src/features/auth/sign_in_screen.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'auth_providers.dart';
+
+class SignInScreen extends ConsumerStatefulWidget {
+  const SignInScreen({super.key});
+
+  @override
+  ConsumerState<SignInScreen> createState() => _SignInScreenState();
+}
+
+class _SignInScreenState extends ConsumerState<SignInScreen> {
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  bool _isSignUp = false;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final auth = ref.read(supabaseProvider).auth;
+    try {
+      if (_isSignUp) {
+        await auth.signUp(email: _email.text.trim(), password: _password.text);
+      } else {
+        await auth.signInWithPassword(
+          email: _email.text.trim(),
+          password: _password.text,
+        );
+      }
+      // No manual navigation: the router's redirect reacts to the new session.
+    } on AuthException catch (e) {
+      setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(_isSignUp ? 'Create account' : 'Sign in')),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            TextField(
+              controller: _email,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(labelText: 'Email'),
+            ),
+            TextField(
+              controller: _password,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'Password'),
+            ),
+            const SizedBox(height: 16),
+            if (_error != null)
+              Text(_error!, style: const TextStyle(color: Colors.red)),
+            const SizedBox(height: 8),
+            FilledButton(
+              onPressed: _busy ? null : _submit,
+              child: Text(_busy
+                  ? 'Please wait…'
+                  : (_isSignUp ? 'Sign up' : 'Sign in')),
+            ),
+            TextButton(
+              onPressed: _busy
+                  ? null
+                  : () => setState(() => _isSignUp = !_isSignUp),
+              child: Text(_isSignUp
+                  ? 'Have an account? Sign in'
+                  : 'New here? Create an account'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+```
+
+### 6. Gate the router — update `lib/src/router.dart`
+
+ตอนนี้ router watch session แล้ว **redirect**: ไม่มี session ⇒ บังคับ `/sign-in`; มี session แต่นั่งอยู่ที่ `/sign-in` ⇒ ส่งไป home `refreshListenable` ทำให้ go_router รัน redirect ใหม่ทุกครั้งที่ auth พลิก
+
+```dart
+// lib/src/router.dart
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import 'features/auth/auth_providers.dart';
+import 'features/auth/sign_in_screen.dart';
+import 'features/workouts/home_screen.dart';
+
+final routerProvider = Provider<GoRouter>((ref) {
+  return GoRouter(
+    initialLocation: '/',
+    // Re-evaluate the redirect whenever the auth stream emits.
+    refreshListenable: _AuthRefresh(ref),
+    redirect: (context, state) {
+      final signedIn = ref.read(sessionProvider) != null;
+      final onSignIn = state.matchedLocation == '/sign-in';
+      if (!signedIn) return onSignIn ? null : '/sign-in';
+      if (onSignIn) return '/';
+      return null; // no redirect
+    },
+    routes: [
+      GoRoute(
+        path: '/',
+        name: 'home',
+        builder: (context, state) => const HomeScreen(),
+      ),
+      GoRoute(
+        path: '/sign-in',
+        name: 'sign-in',
+        builder: (context, state) => const SignInScreen(),
+      ),
+    ],
+  );
+});
+
+/// Bridges Riverpod's auth stream to go_router's Listenable-based refresh.
+class _AuthRefresh extends ChangeNotifier {
+  _AuthRefresh(Ref ref) {
+    ref.listen(authStateProvider, (_, __) => notifyListeners());
+  }
+}
+```
+
+เพิ่มปุ่ม sign-out ที่ home screen เพื่อให้ทดสอบ gate ได้ทั้งสองทาง:
+
+```dart
+// lib/src/features/workouts/home_screen.dart — AppBar actions
+appBar: AppBar(
+  title: const Text('FitTrack'),
+  actions: [
+    IconButton(
+      icon: const Icon(Icons.logout),
+      onPressed: () => ref.read(supabaseProvider).auth.signOut(),
+    ),
+  ],
+),
+```
+
+## Verify
+
+analyze แล้วรันโดยส่ง config เข้าไป anon key และ URL มาจาก Supabase project ของคุณ (ตั้งค่าไว้ใน [The Supabase project →](/fittrack/th/setup/supabase-project/)):
+
+```bash
+flutter analyze
+flutter run \
+  --dart-define=SUPABASE_URL=https://your-project-ref.supabase.co \
+  --dart-define=SUPABASE_ANON_KEY=your-anon-key
+```
+
+คุณควรลงที่หน้า **Sign in** (ยังไม่มี session — gate redirect คุณมา) สลับไป **Create an account** กรอก email กับ password แล้ว submit ถ้าปิด email confirmation ไว้สำหรับ dev แบบ local stream `onAuthStateChange` จะ fire, redirect รันใหม่ และคุณมาถึง home screen **FitTrack** ตอนนี้ถึงการทดสอบ persistence จริง — **หยุดแอปสนิทแล้วเปิดใหม่** ด้วยคำสั่งเดิม:
+
+```txt
+# after restart, with a persisted session:
+→ app opens directly on the home screen, no sign-in required
+```
+
+นั่นคือ `Supabase.initialize` กู้ session ที่บันทึกไว้กลับมา แตะ icon logout แล้วคุณจะเด้งกลับไป `/sign-in` สุดท้าย รักษา guard ให้เขียวไว้:
+
+```bash
+flutter test
+```
+
+```txt
+00:02 +1: All tests passed!
+```
+
+ตรวจสอบความเข้าใจ:
+
+- ทำไมหน้า sign-in ถึงไม่เรียก `context.go('/')` หลัง `signInWithPassword` สำเร็จ อะไรกันแน่ที่พาผู้ใช้เข้าตัวแอป?
+- ทั้ง `SUPABASE_URL` และ `SUPABASE_ANON_KEY` ship อยู่ในแอปที่ build แล้ว ทำไมถึงปลอดภัย และค่า config สองตัวไหนที่ *ห้าม* ส่งไป client แบบนี้เด็ดขาด?
+- หลัง restart แอปสนิทผู้ใช้ยัง sign-in อยู่ บรรทัดเดียวไหนใน `main.dart` ที่รับผิดชอบ และ session อยู่ที่ไหนระหว่างการ launch แต่ละครั้ง?
+- `refreshListenable` ต่อสายกับ `ChangeNotifier` ที่ listen `authStateProvider` อะไรจะเสียไปกับ auth gate ถ้าละมันไว้?
+
+## Recap
+
+ตอนนี้ Flutter app authenticate ในแบบฉบับ FitTrack: `supabase_flutter` ถูก initialize ใน `main` ด้วย `SUPABASE_URL` และ `SUPABASE_ANON_KEY` ที่เป็น public ส่งผ่าน `--dart-define`, หน้า sign-in/sign-up รวมในหน้าเดียวเรียก `signInWithPassword` / `signUp` และ session ถูก expose เป็น Riverpod provider ที่ขับด้วย `onAuthStateChange` `routerProvider` กลายเป็น auth gate จริง — คนที่ยังไม่ sign-in ถูก redirect ไป `/sign-in` คนที่ sign-in แล้วเข้าตัวแอป — และ session ที่ persist ไว้รอดข้าม restart ทั้งหมดนี้โดยที่ FastAPI อยู่นอกเรื่อง credential และแค่ [verify JWT →](/fittrack/th/auth/) ต่อไป [The API client →](/fittrack/th/flutter-foundation/api-client/) อ่าน `sessionProvider` เพื่อเอา `accessToken` ปัจจุบันแล้วแนบมันเป็น `Authorization: Bearer` บนทุก call ที่ยิงไป FastAPI backend
