@@ -1,15 +1,15 @@
 ---
 title: Recap
-description: "ย้อนมองทั้งหมดของ FitTrack แบบไตร่ตรอง: สิ่งที่คุณสร้าง, เส้นทางที่ logged set หนึ่งตัวเดินจาก client ผ่าน Supabase Auth และ FastAPI เข้า Postgres แล้วกลับ, ตารางการตัดสินใจเชิงสถาปัตยกรรมที่คุณ defend ได้พร้อม tradeoff ของมัน, และอะไรที่ตั้งใจตัดออก แต่ละจุดลิงก์กลับไปยัง module ที่คุณตัดสินใจมัน"
+description: "ย้อนมองทั้งหมดของ FitTrack แบบไตร่ตรอง: สิ่งที่คุณสร้าง, เส้นทางที่ logged set หนึ่งตัวเดินจาก client ผ่าน Supabase Auth และ FastAPI เข้า Postgres แล้วกลับ, ตารางการตัดสินใจเชิงสถาปัตยกรรมที่คุณ defend ได้พร้อม tradeoff, และอะไรที่ตั้งใจตัดออก แต่ละจุดลิงก์กลับไปยัง module ที่คุณตัดสินใจเรื่องนั้น"
 sidebar:
   order: 1
 ---
 
-## What you built
+## สิ่งที่คุณสร้างไป
 
-คุณสร้าง **FitTrack**: workout tracker ที่มี **Flutter** app แบบ native, **SvelteKit** web companion, และ **FastAPI** backend ตัวเดียว หนุนหลังด้วย **Supabase** สำหรับ authentication และ managed Postgres — และใน module สุดท้าย คุณ deploy มันทั้งหมด
+คุณสร้าง **FitTrack**: workout tracker ที่มี **Flutter** app แบบ native, **SvelteKit** web companion, และ **FastAPI** backend ตัวเดียว หนุนหลังด้วย **Supabase** สำหรับ authentication และ managed Postgres — และใน module สุดท้าย คุณ deploy ขึ้นจริงทั้งหมด
 
-ตามไล่ทีละ module แล้วมันคือ product ที่ครบ ไม่ใช่ของเล่น:
+ไล่ดูทีละ module แล้วนี่คือ product ที่ครบ ไม่ใช่ของเล่น:
 
 - FastAPI project ที่จัดการด้วย `uv` ([Module 1](/fittrack/th/setup/python-toolchain/)) พร้อม database จริงที่นิยามเป็น migration ([Module 2](/fittrack/th/supabase/schema-and-migrations/))
 - Backend ที่ async, config ครบ, มีโครงสร้าง ([Module 3](/fittrack/th/fastapi/app-and-config/)) ที่ verify Supabase JWT และรู้ว่าผู้เรียกคือใคร ([Module 4](/fittrack/th/auth/verify-the-jwt/))
@@ -17,9 +17,9 @@ sidebar:
 - Client สองตัวบน API เดียวนั้น: Flutter app ที่มี Riverpod, Supabase auth, และ typed API client ([Module 9](/fittrack/th/flutter-foundation/project-and-state/)) ที่ log set และแสดง history ([Module 10](/fittrack/th/flutter-tracking/logging-ui/)), และ SvelteKit dashboard ที่อ่าน endpoint เดียวกัน ([Module 11](/fittrack/th/svelte-companion/dashboard/))
 - Tests คลุม backend และ tracking UI ([Module 12](/fittrack/th/testing/pytest-backend/)), แล้ว containerized API บน Supabase แบบ hosted พร้อม client ทั้งสองที่ ship แล้ว ([Module 13](/fittrack/th/deployment/containerize-the-api/))
 
-## The path of a logged set
+## เส้นทางของ set ที่ log ไว้หนึ่งตัว
 
-ทุกอย่างข้างบนยุบรวมเป็นการเคลื่อนไหวเดียว: user log set หนึ่งตัว แล้วมันเดินทางทั่วทั้งระบบ นี่คือ round trip นั้น — เหมือนกันทั้ง Flutter app และ Svelte companion เพราะพวกมันใช้ backend ร่วมกัน
+ทุกอย่างข้างบนยุบรวมเป็นการเคลื่อนไหวเดียว: user log set หนึ่งตัว แล้วข้อมูลนั้นเดินทางทั่วทั้งระบบ นี่คือ round trip นั้น — เหมือนกันทั้ง Flutter app และ Svelte companion เพราะทั้งคู่ใช้ backend ร่วมกัน
 
 ```mermaid
 sequenceDiagram
@@ -39,11 +39,11 @@ sequenceDiagram
     Note over C: history & progress screens refresh
 ```
 
-อ่านจากบนลงล่างแล้วทุก module มีที่ทางในนั้น client ได้ **JWT** ของมันจาก Supabase Auth ([Module 4](/fittrack/th/auth/verify-the-jwt/)) FastAPI **verify** token นั้นก่อนทำอะไร ([Module 4](/fittrack/th/auth/current-user/)) การเขียนลงไปเป็น **async transaction เดียว** ผ่าน domain layer ([Module 7](/fittrack/th/workouts/logging-sessions/)) และ response กลับมาเป็น typed **Pydantic** shape ([Module 5](/fittrack/th/domain/schemas-and-repositories/)) ที่ client render client ไม่เคยแตะ database เลย — FastAPI เป็นสิ่งเดียวที่แตะ
+อ่านจากบนลงล่างแล้วทุก module มีที่ทางในนั้น client ได้ **JWT** จาก Supabase Auth ([Module 4](/fittrack/th/auth/verify-the-jwt/)) FastAPI **verify** token นั้นก่อนทำอะไร ([Module 4](/fittrack/th/auth/current-user/)) การเขียนลงไปเป็น **async transaction เดียว** ผ่าน domain layer ([Module 7](/fittrack/th/workouts/logging-sessions/)) และ response กลับมาเป็น typed **Pydantic** shape ([Module 5](/fittrack/th/domain/schemas-and-repositories/)) ที่ client render client ไม่เคยแตะ database เลย — FastAPI เป็นสิ่งเดียวที่แตะ
 
-## The decisions you can now defend
+## การตัดสินใจที่คุณอธิบายเหตุผลได้แล้ว
 
-ทุกข้อคือทางแยกที่มีทางเลือกจริง ตอนนี้คุณบอกได้ว่า *ทำไม* คุณถึงเลือกทางนั้น — และมันแลกมาด้วยอะไร
+ทุกข้อคือทางแยกที่มีทางเลือกจริง ตอนนี้คุณบอกได้ว่า *ทำไม* คุณถึงเลือกทางนั้น — และแลกมาด้วยอะไร
 
 | Decision | Why it wins | The tradeoff | Where you made it |
 |---|---|---|---|
@@ -54,7 +54,7 @@ sequenceDiagram
 | **Async SQLAlchemy 2.0** | DB I/O ที่ไม่ block เข้ากับ async model ของ FastAPI และ scale ได้ภายใต้ request พร้อมกันหลายตัว | async engine กับ session dependency มีพิธีรีตองมากกว่า sync ORM | [Async database →](/fittrack/th/fastapi/async-database/) |
 | **Local-first development** | ทั้ง stack — Postgres, Auth, migrations — รันบนเครื่องคุณ production จึงเป็นการเปลี่ยน config ไม่ใช่การเขียนใหม่ | คุณรัน Supabase CLI stack ในเครื่องแทนที่จะ develop กับ cloud | [Schema & migrations →](/fittrack/th/supabase/schema-and-migrations/) |
 
-## What was deliberately simplified
+## สิ่งที่จงใจทำให้ง่ายลง
 
 FitTrack ถูก scope ไว้ ไม่ใช่ทำไม่เสร็จ แต่ละข้อคือ "ไม่ใช่ตอนนี้" ที่ตั้งใจ เพื่อให้คอร์สสอนแกนหลักครบ end to end แทนที่จะบานปลาย:
 
@@ -64,8 +64,8 @@ FitTrack ถูก scope ไว้ ไม่ใช่ทำไม่เสร็
 - **ไม่มี offline sync** Flutter app สมมติว่ามีการเชื่อมต่อและคุยกับ API แบบ live ([Module 10](/fittrack/th/flutter-tracking/logging-ui/)); local cache ที่มี conflict resolution เป็น feature จริงจังในตัวเอง
 - **profile แบบ minimal** `profiles` เก็บ `display_name` และแทบไม่มีอะไรอื่น ([the schema](/fittrack/th/supabase/schema-and-migrations/)) — พอที่จะเป็นเจ้าของ workout ไม่มากกว่านั้น
 
-ไม่มีข้อไหนที่ขาดไปโดยบังเอิญ พวกมันคือ feature ต่อไปตามธรรมชาติ และ [next lesson →](/fittrack/th/wrap-up/next-steps/) แสดงชัดว่าแต่ละอันเสียบเข้ากับสิ่งที่คุณสร้างไว้แล้วตรงไหน
+ไม่มีข้อไหนที่ขาดไปโดยบังเอิญ ทั้งหมดคือ feature ต่อไปตามธรรมชาติ และ [next lesson →](/fittrack/th/wrap-up/next-steps/) แสดงชัดว่าแต่ละอันเสียบเข้ากับสิ่งที่คุณสร้างไว้แล้วตรงไหน
 
-## Recap
+## สรุป
 
-คุณสร้าง fitness tracker แบบ two-client ที่จริงและ deploy แล้วบน FastAPI backend เดียวและ managed Supabase และตอนนี้คุณตาม logged set หนึ่งตัวผ่าน **client → Supabase Auth → FastAPI → Postgres → กลับ** ได้โดยไม่ต้องกำกวม มากกว่าโค้ด คุณเดินจากไปพร้อม **การตัดสินใจที่คุณ defend ได้**: ทำไม FastAPI เป็น gate, ทำไม Supabase, ทำไม RLS เป็นตาข่ายรองไม่ใช่ประตูหน้า, ทำไม repo เดียว, ทำไม async, ทำไม local-first — แต่ละอย่างพร้อม tradeoff ที่มันแบก และคุณรู้แน่ชัดว่าอะไรที่คุณ *ไม่ได้* สร้างและทำไม ต่อไป [Next steps →](/fittrack/th/wrap-up/next-steps/) จะเปลี่ยนการละเว้นที่ตั้งใจเหล่านั้นเป็น roadmap ของคุณ — feature ที่เป็นรูปธรรมให้เพิ่ม, แต่ละอันสอนอะไร, และเสียบเข้ากับระบบที่คุณมีอยู่แล้วตรงไหน
+คุณสร้าง fitness tracker แบบ two-client ที่จริงและ deploy แล้วบน FastAPI backend เดียวและ managed Supabase และตอนนี้คุณตาม logged set หนึ่งตัวผ่าน **client → Supabase Auth → FastAPI → Postgres → กลับ** ได้โดยไม่ต้องกำกวม มากกว่าโค้ด คุณเดินจากไปพร้อม **การตัดสินใจที่คุณ defend ได้**: ทำไม FastAPI เป็น gate, ทำไม Supabase, ทำไม RLS เป็นตาข่ายรองไม่ใช่ประตูหน้า, ทำไม repo เดียว, ทำไม async, ทำไม local-first — แต่ละอย่างพร้อม tradeoff ที่แบกมาด้วย และคุณรู้แน่ชัดว่าอะไรที่คุณ *ไม่ได้* สร้างและทำไม ต่อไป [Next steps →](/fittrack/th/wrap-up/next-steps/) จะเปลี่ยนการละเว้นที่ตั้งใจเหล่านั้นเป็น roadmap ของคุณ — feature ที่เป็นรูปธรรมให้เพิ่ม, แต่ละอันสอนอะไร, และเสียบเข้ากับระบบที่คุณมีอยู่แล้วตรงไหน

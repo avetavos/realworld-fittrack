@@ -1,29 +1,29 @@
 ---
 title: Reading history
-description: "ฝั่ง read ของ workouts: GET /workouts คืน history ของ caller เองเรียงใหม่สุดก่อน, GET /workouts/{id} ดึง session เดียวพร้อม set ของมัน, DELETE /workouts/{id} ลบทีละอัน — ทั้งหมด scope ให้เจ้าของด้วย filter user_id ใน query ดังนั้น workout ที่คุณไม่ได้เป็นเจ้าของแยกไม่ออกจากอันที่ไม่มีอยู่ (404) ทำไม filter-by-owner ถึงชนะ fetch-then-check และทำไม selectinload ถึงจำเป็นภายใต้ async ตรวจสอบด้วย Supabase JWT กับ curl ยิงไปที่ localhost:8000"
+description: "ฝั่ง read ของ workouts: GET /workouts คืน history ของ caller เองเรียงใหม่สุดก่อน, GET /workouts/{id} ดึง session เดียวพร้อม set ทั้งหมด, DELETE /workouts/{id} ลบทีละอัน — ทั้งหมด scope ให้เจ้าของด้วย filter user_id ใน query ดังนั้น workout ที่คุณไม่ได้เป็นเจ้าของแยกไม่ออกจากอันที่ไม่มีอยู่ (404) ทำไม filter-by-owner ถึงชนะ fetch-then-check และทำไม selectinload ถึงจำเป็นภายใต้ async ตรวจสอบด้วย Supabase JWT กับ curl ยิงไปที่ localhost:8000"
 sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
 ฝั่ง read และ delete ของ `app/routers/workouts.py` เหนือ session ที่ [Logging sessions →](/fittrack/th/workouts/logging-sessions/) เขียนไว้:
 
 - `GET /workouts` — workout history ของ caller เอง **ใหม่สุดก่อน**
-- `GET /workouts/{id}` — session เดียวพร้อม set ทุกตัวของมัน
+- `GET /workouts/{id}` — session เดียวพร้อม set ทุกตัว
 - `DELETE /workouts/{id}` — ลบ session หนึ่งอันของ caller
 
-ทุก route scope ให้ **เจ้าของ** ต่างจาก exercise catalog workout ไม่เคยถูกใช้ร่วมกัน — มันคือ training history ส่วนตัว — ดังนั้นไม่มีการแยก public/private ให้ต้องคิด: workout อันหนึ่งเป็นของคุณ หรือในมุมของ API มันไม่มีอยู่ เราบังคับสิ่งนั้นด้วยการใส่ `user_id` ไว้ใน `WHERE` clause ของทุก query ซึ่งเปลี่ยน ownership ให้เป็นคุณสมบัติของตัว fetch เอง
+ทุก route scope ให้ **เจ้าของ** ต่างจาก exercise catalog ตรงที่ workout ไม่เคยแชร์กับใคร — เป็น training history ส่วนตัว — ดังนั้นไม่มีการแยก public/private ให้ต้องคิด: workout อันหนึ่งเป็นของคุณ หรือในมุมของ API ก็คือไม่มีอยู่ เราบังคับสิ่งนั้นด้วยการใส่ `user_id` ไว้ใน `WHERE` clause ของทุก query ซึ่งเปลี่ยน ownership ให้เป็นคุณสมบัติของตัว fetch เอง
 
-## Why
+## ทำไม
 
-วิธีที่สะอาดที่สุดในการบังคับ "คุณแตะได้แค่ workout ของตัวเอง" คือทำให้ **เป็นไปไม่ได้ที่จะ fetch ของคนอื่นตั้งแต่แรก** แทนที่จะโหลด workout ด้วย id แล้ว *ค่อย* เทียบ `user_id` ของมันกับ caller (fetch-then-check) ทุก query filter บน `Workout.user_id == caller` ตั้งแต่ต้น workout ของ user คนอื่นก็ไม่กลับมาเลย — `scalar_one_or_none()` คืน `None` — และ route คืน `404` ไม่มี authorization branch แยกให้ลืม ไม่มีช่วงที่แถวอยู่ใน memory ก่อนเช็ค และเคส "ไม่ใช่ของคุณ" กับ "ไม่มีอยู่" ยุบรวมเป็น `404` ที่ซื่อสัตย์เดียวกัน: history ของคุณมีมันหรือไม่มี และคุณ probe หาการมีอยู่ของ session คนอื่นไม่ได้ (นี่คือภาพสะท้อนของ exercise catalog ที่ exercise สาธารณะ *ถูก* ใช้ร่วมกันจึงต้องมี `403` ชัด ๆ workout ไม่แชร์อะไรเลย filter จึงเป็นเรื่องราวทั้งหมด)
+วิธีที่สะอาดที่สุดในการบังคับ "คุณแตะได้แค่ workout ของตัวเอง" คือทำให้ **เป็นไปไม่ได้ที่จะ fetch ของคนอื่นตั้งแต่แรก** แทนที่จะโหลด workout ด้วย id แล้ว *ค่อย* เทียบ `user_id` ของแถวนั้นกับ caller (fetch-then-check) ทุก query filter บน `Workout.user_id == caller` ตั้งแต่ต้น workout ของ user คนอื่นก็ไม่กลับมาเลย — `scalar_one_or_none()` คืน `None` — และ route คืน `404` ไม่มี authorization branch แยกให้ลืม ไม่มีช่วงที่แถวอยู่ใน memory ก่อนเช็ค และเคส "ไม่ใช่ของคุณ" กับ "ไม่มีอยู่" ยุบรวมเป็น `404` ที่ซื่อสัตย์เดียวกัน: history ของคุณมีหรือไม่มี และคุณ probe หาการมีอยู่ของ session คนอื่นไม่ได้ (นี่คือภาพสะท้อนของ exercise catalog ที่ exercise สาธารณะแชร์กันจริงจึงต้องมี `403` ชัด ๆ workout ไม่แชร์อะไรเลย filter จึงเป็นเรื่องราวทั้งหมด)
 
 **ใหม่สุดก่อน** คือ default ที่หน้าจอ history ต้องการ: `order_by(Workout.performed_at.desc())` คนที่เปิด FitTrack สนใจว่าวันนี้ทำอะไร ไม่ใช่ session แรกในชีวิต ดังนั้น API คืนอันล่าสุดไว้บนสุดแทนที่จะให้ client จัดเรียงใหม่
 
-และเหมือน write path การอ่าน workout พร้อม set ของมันแปลว่าต้อง **eager-load** relationship `sets` ด้วย `selectinload` ภายใต้ async SQLAlchemy นี่ไม่ใช่ทางเลือก: lazy load ที่ถูก trigger ตอน serialize response — นอก `await` context ของ session — raise `MissingGreenlet` แทนที่จะรัน query เงียบ ๆ `selectinload` fetch set ทั้งหมดสำหรับ workout ที่คืนมาใน query เพิ่มเดียวตั้งแต่ต้น ดังนั้น `WorkoutRead` ที่ซ้อนกัน serialize ได้สะอาดและคุณเลี่ยง N+1 ที่ lazy load แบบ per-workout ไร้เดียงสาจะก่อ
+และเหมือน write path การอ่าน workout พร้อม set แปลว่าต้อง **eager-load** relationship `sets` ด้วย `selectinload` ภายใต้ async SQLAlchemy นี่ไม่ใช่ทางเลือก: lazy load ที่ trigger ตอน serialize response — นอก `await` context ของ session — raise `MissingGreenlet` แทนที่จะรัน query เงียบ ๆ `selectinload` fetch set ทั้งหมดสำหรับ workout ที่คืนมาใน query เพิ่มเดียวตั้งแต่ต้น ดังนั้น `WorkoutRead` ที่ซ้อนกัน serialize ได้สะอาดและคุณเลี่ยง N+1 ที่ lazy load แบบ per-workout ไร้เดียงสาจะก่อ
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Ownership as a `WHERE user_id = :me` filter** vs. **fetch by id, then check ownership in the handler**
 
@@ -32,10 +32,10 @@ sidebar:
 
 **`selectinload` eager loading** vs. **lazy-loading `workout.sets` on access**
 
-- **Pros:** set ทั้งหมดโหลดใน query เพิ่มเดียวก่อน serialization ดังนั้น response ที่ซ้อนกันถูกต้องและไม่มี N+1 และมันใช้ได้ภายใต้ async SQLAlchemy ที่ lazy loading ตอน serialize response error เอาดื้อ ๆ
-- **Cons:** คุณ fetch set แม้กับ caller ที่ต้องการแค่ header ของ workout (over-fetch เล็กน้อยบน list endpoint) และคุณต้องจำ `.options(...)` บนทุก query ที่คืน workout เมื่อ body ของ workout *รวม* set ของมันอยู่แล้ว การโหลดมันแบบ eager คือสิ่งที่ response ต้องการอยู่ดี
+- **Pros:** set ทั้งหมดโหลดใน query เพิ่มเดียวก่อน serialization ดังนั้น response ที่ซ้อนกันถูกต้องและไม่มี N+1 และใช้ได้ภายใต้ async SQLAlchemy ที่ lazy loading ตอน serialize response error เอาดื้อ ๆ
+- **Cons:** คุณ fetch set แม้กับ caller ที่ต้องการแค่ header ของ workout (over-fetch เล็กน้อยบน list endpoint) และคุณต้องจำ `.options(...)` บนทุก query ที่คืน workout เมื่อ body ของ workout *รวม* set อยู่แล้ว การ eager-load ก็คือสิ่งที่ response ต้องการอยู่ดี
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `app/repositories/workout.py`
 
@@ -80,7 +80,7 @@ class WorkoutRepo:
 
 ### 2. `app/routers/workouts.py`
 
-`GET /workouts` ไม่ต้องเช็ค id — filter scope มันไว้แล้ว route ของ workout เดียว fetch ผ่าน `get_for_user` และ `404` เมื่อ `None` ดังนั้น ownership กับ existence เป็น branch เดียวกัน
+`GET /workouts` ไม่ต้องเช็ค id — filter scope ให้เรียบร้อยแล้ว ส่วน route ของ workout เดียว fetch ผ่าน `get_for_user` และ `404` เมื่อ `None` ดังนั้น ownership กับ existence เป็น branch เดียวกัน
 
 ```python
 # app/routers/workouts.py — add to the router from the previous lesson.
@@ -121,9 +121,9 @@ async def delete_workout(
     await repo.delete(workout)
 ```
 
-## Verify
+## ตรวจสอบผล
 
-ขอ token แล้ว log สัก session สองอัน (ดู [Logging sessions →](/fittrack/th/workouts/logging-sessions/#verify)) เพื่อให้มี history ให้อ่าน จากนั้น list มัน — ใหม่สุดก่อน:
+ขอ token แล้ว log สัก session สองอัน (ดู [Logging sessions →](/fittrack/th/workouts/logging-sessions/#verify)) เพื่อให้มี history ให้อ่าน จากนั้น list ออกมา — ใหม่สุดก่อน:
 
 ```bash
 TOKEN=$(curl -s "http://127.0.0.1:54321/auth/v1/token?grant_type=password" \
@@ -141,7 +141,7 @@ curl -s localhost:8000/workouts -H "Authorization: Bearer $TOKEN" \
 ]
 ```
 
-session `18:05` เรียงอยู่เหนืออัน `09:30` — `order_by(performed_at.desc())` ทำงานอยู่ ดึง session เดียวแล้วยืนยันว่า set ของมันกลับมาซ้อนกัน:
+session `18:05` เรียงอยู่เหนืออัน `09:30` — `order_by(performed_at.desc())` ทำงานอยู่ ดึง session เดียวแล้วยืนยันว่า set กลับมาซ้อนอยู่ข้างใน:
 
 ```bash
 WID=$(curl -s localhost:8000/workouts -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id')
@@ -172,7 +172,7 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 404
 ```
 
-ลบ session แล้วพิสูจน์ว่ามันหายไปและ list หดลง:
+ลบ session แล้วพิสูจน์ว่าหายไปจริงและ list หดลง:
 
 ```bash
 curl -s -o /dev/null -w "delete: %{http_code}\n" -X DELETE \
@@ -189,9 +189,9 @@ delete: 204
 
 - การใส่ `user_id` ใน `WHERE` clause ทำให้ "ไม่ใช่ของคุณ" กับ "ไม่มีอยู่" เป็น `404` เดียวกัน ทำไมนั่นคือผลลัพธ์ที่ถูกสำหรับ workout ในเมื่อ exercise catalog จงใจคืน `403` สำหรับ "ไม่ใช่ของคุณ"?
 - async SQLAlchemy raise error อะไรถ้าคุณทิ้ง `selectinload` แล้วปล่อยให้ `WorkoutRead` lazy-load `workout.sets` ตอน serialization?
-- `delete_workout` เรียก `get_for_user` ก่อนลบ ทั้งที่มันยิง delete ที่ filter ด้วย `user_id` ตรง ๆ ได้ การ fetch ก่อนให้อะไรคุณ?
-- แถว child `WorkoutSet` หายไปตอน workout ของมันถูกลบ แต่ delete ลบแค่ `Workout` อะไรทำให้ set หายไปกับมัน?
+- `delete_workout` เรียก `get_for_user` ก่อนลบ ทั้งที่ยิง delete ที่ filter ด้วย `user_id` ตรง ๆ ได้ การ fetch ก่อนให้อะไรคุณ?
+- แถว child `WorkoutSet` หายไปตอนลบ workout แม่ แต่ delete ลบแค่ `Workout` อะไรทำให้ set หายตามไปด้วย?
 
-## Recap
+## สรุป
 
-ฝั่ง read ของ workout ถูก scope ให้เจ้าของโดยโครงสร้าง: `GET /workouts` คืน history ของ caller เรียงใหม่สุดก่อน, `GET /workouts/{id}` คืน session เดียวพร้อม set ของมัน และ `DELETE /workouts/{id}` ลบทีละอัน — ทั้งหมด filter บน `Workout.user_id == caller` ภายในตัว query ดังนั้น workout ของ user คนอื่นแยกไม่ออกจากอันที่ไม่มีอยู่ และทั้งคู่คืน `404` pattern filter-by-owner นั้นแทนที่ authorization branch แบบ fetch-then-check และลืมไม่ได้ `selectinload` eager-load `sets` เพื่อให้ response ที่ซ้อนกัน serialize ได้ถูกต้องภายใต้ async และ cascade ของ model ลบ set ของ workout ไปพร้อมมันตอน delete คุณตรวจสอบการเรียงใหม่สุดก่อน, set ที่ซ้อน, `404` ของ ownership และ delete ด้วย `curl` นั่นทำให้ Workouts API เสร็จสมบูรณ์ — ต่อไป [Progress & Stats →](/fittrack/th/progress/) เปลี่ยน history ที่ log ไว้นี้ให้เป็นข้อมูลเชิงลึก: personal record, volume รายสัปดาห์ และ trend ต่อ exercise คำนวณด้วย SQL aggregation
+ฝั่ง read ของ workout ถูก scope ให้เจ้าของโดยโครงสร้าง: `GET /workouts` คืน history ของ caller เรียงใหม่สุดก่อน, `GET /workouts/{id}` คืน session เดียวพร้อม set ทั้งหมด และ `DELETE /workouts/{id}` ลบทีละอัน — ทั้งหมด filter บน `Workout.user_id == caller` ภายในตัว query ดังนั้น workout ของ user คนอื่นแยกไม่ออกจากอันที่ไม่มีอยู่ และทั้งคู่คืน `404` pattern filter-by-owner นั้นแทนที่ authorization branch แบบ fetch-then-check และลืมไม่ได้ `selectinload` eager-load `sets` เพื่อให้ response ที่ซ้อนกัน serialize ได้ถูกต้องภายใต้ async และ cascade ของ model ลบ set ของ workout ไปพร้อมกันตอน delete คุณตรวจสอบการเรียงใหม่สุดก่อน, set ที่ซ้อน, `404` ของ ownership และ delete ด้วย `curl` นั่นทำให้ Workouts API เสร็จสมบูรณ์ — ต่อไป [Progress & Stats →](/fittrack/th/progress/) เปลี่ยน history ที่ log ไว้นี้ให้เป็นข้อมูลเชิงลึก: personal record, volume รายสัปดาห์ และ trend ต่อ exercise คำนวณด้วย SQL aggregation

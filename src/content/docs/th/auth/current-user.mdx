@@ -1,41 +1,41 @@
 ---
 title: The current user
-description: "เปลี่ยน stub /me เป็น endpoint จริง: ป้องกัน route ด้วย Depends(get_current_user), เอา user id ที่ verify แล้ว, แล้ว lookup profile ใน database ผ่าน async session จาก app/db.py — return มัน หรือ 404 เมื่อไม่มี profile row ทำไม session dependency และ auth dependency ถึง compose กันได้สะอาด และทำไม /me อ่านจาก raw query ตอนนี้และ typed model ทีหลัง ตรวจสอบด้วยการดึง profile ของตัวเองด้วย Supabase token จริงแล้วได้ 404 สำหรับ user ที่ไม่รู้จัก"
+description: "เปลี่ยน stub /me เป็น endpoint จริง: ป้องกัน route ด้วย Depends(get_current_user), เอา user id ที่ verify แล้ว, แล้ว lookup profile ใน database ผ่าน async session จาก app/db.py — return profile นั้น หรือ 404 เมื่อไม่มี profile row ทำไม session dependency และ auth dependency ถึง compose กันได้สะอาด และทำไม /me อ่านจาก raw query ตอนนี้และ typed model ทีหลัง ตรวจสอบด้วยการดึง profile ของตัวเองด้วย Supabase token จริงแล้วได้ 404 สำหรับ user ที่ไม่รู้จัก"
 sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-`GET /me` — endpoint ที่ตอบ "ฉันเป็นใคร และ profile ของฉันคืออะไร" `/me` ของบทที่แล้วแค่ echo id จาก token ตอนนี้มันทำงานจริง: เอา user id ที่ verify แล้ว, เปิด **async database session**, lookup row ที่ตรงกันใน `profiles`, แล้ว return มัน — หรือ `404` ถ้าบังเอิญไม่มี profile สำหรับ id นั้น
+`GET /me` — endpoint ที่ตอบ "ฉันเป็นใคร และ profile ของฉันคืออะไร" `/me` ของบทที่แล้วแค่ echo id จาก token ตอนนี้ทำงานจริงแล้ว: เอา user id ที่ verify แล้ว, เปิด **async database session**, lookup row ที่ตรงกันใน `profiles`, แล้ว return ออกไป — หรือ `404` ถ้าบังเอิญไม่มี profile สำหรับ id นั้น
 
 นี่คือ route แรกที่ compose dependency **สอง** ตัว: `get_current_user` (จาก [Verify the Supabase JWT →](/fittrack/th/auth/verify-the-jwt/)) เพื่อยืนยัน *ใคร* และ `get_session` (จาก [Async database →](/fittrack/th/fastapi/async-database/)) เพื่อได้ connection ไว้อ่าน การจับคู่นั้น — "user id ที่ verify แล้วบวก session" — คือรูปร่างเป๊ะที่ทุก protected, data-touching route ใน FitTrack ใช้ ดังนั้น `/me` คือ template
 
-## Why
+## ทำไม
 
-JWT ถือ id ของ user ไว้ใน `sub` claim อยู่แล้ว ดังนั้น `/me` แบบ naive แค่ return มันแล้วจบก็ได้ แต่ "current user" ใน product หมายถึง **profile** ของ user — `display_name` ของเขา, เขา join เมื่อไหร่ — และนั่นอยู่ใน table `profiles` ไม่ใช่ใน token token พิสูจน์ *identity*; database ถือ *record* `/me` คือที่ที่ทั้งสองมาเจอกัน: authenticate จาก token แล้วอ่านจาก row ที่ key ด้วย identity นั้น
+JWT ถือ id ของ user ไว้ใน `sub` claim อยู่แล้ว ดังนั้น `/me` แบบ naive จะ return ค่านั้นแล้วจบก็ได้ แต่ "current user" ใน product หมายถึง **profile** ของ user — `display_name` ของเขา, เขา join เมื่อไหร่ — และนั่นอยู่ใน table `profiles` ไม่ใช่ใน token token พิสูจน์ *identity*; database ถือ *record* `/me` คือที่ที่ทั้งสองมาเจอกัน: authenticate จาก token แล้วอ่านจาก row ที่ key ด้วย identity นั้น
 
-กลไกเป็นแค่ FastAPI dependency ซ้อนกัน `user_id: CurrentUser` รัน JWT check และ inject id `session: Annotated[AsyncSession, Depends(get_session)]` เปิด session ตลอดชีวิตของ request แล้วปิดมันหลังจากนั้น ดังนั้น handler ไม่เคยจัดการ connection lifecycle เอง ทั้งคู่รันก่อน body; ถ้า token เสีย handler ไม่เคย execute ดังนั้นเมื่อโค้ดคุณรัน คุณมี id ที่น่าเชื่อถือและ session ที่มีชีวิตอยู่แล้ว สังเกตว่า id ที่เรา key คือ `sub` ของ token ดังนั้น `/me` return ได้แค่ *profile ของคุณเอง* เท่านั้น — ไม่มี id ใน URL ให้ดัดแปลง คุณสมบัตินั้น, "identity มาจาก token ที่ verify แล้ว ไม่เคยจาก input ที่ client ส่ง," คือกระดูกสันหลังของ authorization ของ FitTrack
+กลไกเป็นแค่ FastAPI dependency ซ้อนกัน `user_id: CurrentUser` รัน JWT check และ inject id `session: Annotated[AsyncSession, Depends(get_session)]` เปิด session ตลอดชีวิตของ request แล้วปิดให้หลังจากนั้น ดังนั้น handler ไม่เคยจัดการ connection lifecycle เอง ทั้งคู่รันก่อน body; ถ้า token เสีย handler ไม่เคย execute ดังนั้นเมื่อโค้ดคุณรัน คุณมี id ที่น่าเชื่อถือและ session ที่มีชีวิตอยู่แล้ว สังเกตว่า id ที่เรา key คือ `sub` ของ token ดังนั้น `/me` return ได้แค่ *profile ของคุณเอง* เท่านั้น — ไม่มี id ใน URL ให้ดัดแปลง คุณสมบัตินั้น, "identity มาจาก token ที่ verify แล้ว ไม่เคยจาก input ที่ client ส่ง," คือกระดูกสันหลังของ authorization ของ FitTrack
 
-หมายเหตุตรง ๆ หนึ่งเรื่องเกี่ยวกับลำดับ: typed SQLAlchemy `Profile` model ยังไม่มี — มันคือ module ถัดไปเลย ดังนั้น `/me` อ่าน profile ด้วย **raw SQL query แบบ parameterized** ผ่าน session ไปก่อน นั่นไม่ใช่ hack; มันเป็นวิธีที่ถูกต้องในการอ่านหนึ่ง row และมันเก็บบทนี้ให้ focus ที่ pattern auth-บวก-session แทนที่จะดึงทั้ง ORM มาก่อน [The domain model →](/fittrack/th/domain/) แนะนำ `Profile` model และ repository แล้ว API ของ Exercises และ Workouts อ่านผ่านพวกนั้นแทน raw SQL การได้เห็นทั้งสองทำให้คุณค่าของ model ชัดเจน
+หมายเหตุตรง ๆ หนึ่งเรื่องเกี่ยวกับลำดับ: typed SQLAlchemy `Profile` model ยังไม่มี — เป็นเนื้อหาของ module ถัดไปพอดี ดังนั้น `/me` อ่าน profile ด้วย **raw SQL query แบบ parameterized** ผ่าน session ไปก่อน นั่นไม่ใช่ hack แต่เป็นวิธีที่ถูกต้องในการอ่านหนึ่ง row และช่วยให้บทนี้ focus ที่ pattern auth-บวก-session แทนที่จะดึงทั้ง ORM มาก่อน [The domain model →](/fittrack/th/domain/) แนะนำ `Profile` model และ repository แล้ว API ของ Exercises และ Workouts อ่านผ่านพวกนั้นแทน raw SQL การได้เห็นทั้งสองทำให้คุณค่าของ model ชัดเจน
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **derive user จาก `sub` ของ token** เทียบกับ **รับ user id เป็น path/query parameter**
 
 - **Pros:** ผู้เรียกทำได้แค่ในนามตัวเองเท่านั้น — ไม่มี id ใน request ที่เขาเปลี่ยนเพื่ออ่าน profile ของคนอื่นได้ ดังนั้น bug ทั้งชนิด "insecure direct object reference" เป็นไปไม่ได้โดยโครงสร้าง; handler ไม่ต้องการ ownership check เพิ่มสำหรับ `/me`
-- **Cons:** มัน fit แค่ endpoint "current user" — อะไรที่ legitimately อ้างถึง resource *อื่น* ด้วย id (workout เฉพาะตัว, exercise) ยังต้องการ ownership check ชัด ๆ ใน query ดังนั้น pattern นี้เป็น default ที่แข็งแรง ไม่ใช่ universal; route ทีหลัง combine "id จาก token" กับ filter "and `where user_id = :me`"
+- **Cons:** pattern นี้ fit แค่ endpoint "current user" — อะไรที่ legitimately อ้างถึง resource *อื่น* ด้วย id (workout เฉพาะตัว, exercise) ยังต้องการ ownership check ชัด ๆ ใน query ดังนั้น pattern นี้เป็น default ที่แข็งแรง ไม่ใช่ universal; route ทีหลัง combine "id จาก token" กับ filter "and `where user_id = :me`"
 
 **อ่าน `/me` ด้วย raw parameterized query ตอนนี้** เทียบกับ **รอสร้าง ORM model ก่อน**
 
-- **Pros:** `/me` ship ใน auth module ที่มันควรอยู่ โดยไม่มี forward dependency บนโค้ดที่ยังไม่มี; การอ่านแบบ parameterized เดียวเล็ก, ชัด, และปลอดภัยจาก injection เพราะค่าถูก bind ไม่เคย interpolate
+- **Pros:** `/me` ship ใน auth module ที่ควรอยู่ โดยไม่มี forward dependency บนโค้ดที่ยังไม่มี; การอ่านแบบ parameterized เดียวเล็ก, ชัด, และปลอดภัยจาก injection เพราะค่าถูก bind ไม่เคย interpolate
 - **Cons:** ผลลัพธ์เป็น row ที่ไม่ typed แทนที่จะเป็น `Profile`/`ProfileRead` ที่ validate แล้ว ดังนั้นยังไม่มี schema บังคับรูปร่าง response และ query นี้ถูกเขียนใหม่ module ถัดไป นั่นเป็นชิ้นใช้แล้วทิ้งที่ตั้งใจและจำกัดไว้ — ทางเลือกคือลาก domain layer ทั้งหมดเข้ามาในบท auth
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `app/main.py`
 
-แทนที่ `/me` แบบ echo ของบทที่แล้วด้วยตัวที่อ่าน profile ตอนนี้มันพึ่ง session ด้วย:
+แทนที่ `/me` แบบ echo ของบทที่แล้วด้วยตัวที่อ่าน profile ตอนนี้ handler พึ่ง session ด้วย:
 
 ```python
 # app/main.py
@@ -84,13 +84,13 @@ async def read_me(
     return dict(row)
 ```
 
-มีสองรายละเอียดที่ควรพูดถึง query ใช้ **bound parameter** (`:id` กับ `{"id": user_id}`) ไม่เคย string interpolation — ค่าเปลี่ยน SQL ไม่ได้ และ `get_session` (async) ทำให้ทั้ง handler เป็น `async def` ดังนั้นการอ่าน database ถูก await โดยไม่ block event loop response เป็น `dict` ธรรมดาไปก่อน; module ถัดไปให้มัน schema `ProfileRead`
+มีสองรายละเอียดที่ควรพูดถึง query ใช้ **bound parameter** (`:id` กับ `{"id": user_id}`) ไม่เคย string interpolation — ค่าเปลี่ยน SQL ไม่ได้ และ `get_session` (async) ทำให้ทั้ง handler เป็น `async def` ดังนั้นการอ่าน database ถูก await โดยไม่ block event loop response เป็น `dict` ธรรมดาไปก่อน; module ถัดไปจะให้ schema `ProfileRead`
 
-### 2. Where the profile row comes from
+### 2. แถว profile มาจากไหน
 
 `/me` return `404` เมื่อไม่มี `profiles` row สำหรับ id นั้น ใน FitTrack row นั้นถูกสร้างอัตโนมัติในทันทีที่ user sign up: Supabase module เพิ่ม trigger บน `auth.users` ที่ insert `profiles` row ที่ตรงกัน (ดู [Auth & RLS →](/fittrack/th/supabase/auth-and-rls/)) ดังนั้นในการทำงานปกติทุก token ที่ valid มี profile อยู่เบื้องหลัง และ `404` ตรงนี้ส่งสัญญาณว่า user ถูกสร้างก่อน trigger นั้นมีอยู่ — failure ที่มีประโยชน์และตรงไปตรงมา แทนที่จะเป็น crash
 
-## Verify
+## ตรวจสอบผล
 
 start API แล้วคว้า token เป๊ะเหมือนบทที่แล้ว:
 
@@ -140,11 +140,11 @@ curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/me -H "Authorization: Be
 
 ตรวจสอบความเข้าใจ:
 
-- `/me` ไม่รับ id ใน URL แต่ return *profile ของคุณ* ไม่ใช่ของใครอื่น id ที่มัน query มาจากไหน และทำไมนั่นทำให้การโจมตี "act as another user" เป็นไปไม่ได้ที่นี่?
+- `/me` ไม่รับ id ใน URL แต่ return *profile ของคุณ* ไม่ใช่ของใครอื่น id ที่ใช้ query มาจากไหน และทำไมนั่นทำให้การโจมตี "act as another user" เป็นไปไม่ได้ที่นี่?
 - dependency สองตัวรันก่อน body ของ `read_me` แต่ละตัวให้อะไร และเกิดอะไรกับ database query ถ้า token ไม่ valid?
 - ทำไม SQL เขียนด้วย bound `:id` parameter และ `{"id": user_id}` แทนที่จะ format id ลงใน query string?
-- token ที่ valid return `404` จาก `/me` มันบอกอะไรคุณเฉพาะเจาะจง — และทำไมมันไม่ใช่สถานการณ์เดียวกับ `401`?
+- token ที่ valid return `404` จาก `/me` กรณีนี้บอกอะไรคุณเฉพาะเจาะจง — และทำไมถึงไม่ใช่สถานการณ์เดียวกับ `401`?
 
-## Recap
+## สรุป
 
-`GET /me` คือ protected endpoint ที่ realize เต็มตัวตัวแรกของ FitTrack และเป็น template สำหรับทุกตัวที่ตามมา: `Depends(get_current_user)` ยืนยัน *ใคร* จาก JWT ที่ verify แล้ว, `Depends(get_session)` ให้ async session ไว้อ่าน, และ handler lookup `profiles` row ที่ key ด้วย `sub` ของ token — return มัน หรือ `404` เมื่อไม่มี profile เพราะ id มาจาก token และไม่เคยจาก URL, `/me` return ได้แค่ record ของผู้เรียกเอง ซึ่งคือ authorization pattern ที่ทั้ง API พึ่งพา เราอ่านด้วย parameterized raw query ไปก่อนเพราะ ORM model มาถัดไป; เรา verify `200` / `401` / `404` กับ Supabase token จริง "typed model" นั้นคือสิ่งที่มาต่อไปพอดี: [The domain model →](/fittrack/th/domain/) สร้าง SQLAlchemy model, Pydantic schema, และ repository ที่แทนที่ raw query นี้และ back ทุก endpoint ตั้งแต่ Exercises เป็นต้นไป
+`GET /me` คือ protected endpoint ที่ realize เต็มตัวตัวแรกของ FitTrack และเป็น template สำหรับทุกตัวที่ตามมา: `Depends(get_current_user)` ยืนยัน *ใคร* จาก JWT ที่ verify แล้ว, `Depends(get_session)` ให้ async session ไว้อ่าน, และ handler lookup `profiles` row ที่ key ด้วย `sub` ของ token — return row นั้น หรือ `404` เมื่อไม่มี profile เพราะ id มาจาก token และไม่เคยจาก URL, `/me` return ได้แค่ record ของผู้เรียกเอง ซึ่งคือ authorization pattern ที่ทั้ง API พึ่งพา เราอ่านด้วย parameterized raw query ไปก่อนเพราะ ORM model มาถัดไป; เรา verify `200` / `401` / `404` กับ Supabase token จริง "typed model" นั้นคือสิ่งที่มาต่อไปพอดี: [The domain model →](/fittrack/th/domain/) สร้าง SQLAlchemy model, Pydantic schema, และ repository ที่แทนที่ raw query นี้และ back ทุก endpoint ตั้งแต่ Exercises เป็นต้นไป

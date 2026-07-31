@@ -5,42 +5,42 @@ sidebar:
   order: 3
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
 platform ที่ backend ทั้งตัวตั้งอยู่บนนั้น FitTrack ใช้ **Supabase** เพื่อสองอย่าง — database **Postgres** และ **Auth** — และบทนี้ provision ทั้งสอง สองรอบ: **local stack** ที่คุณรันบนเครื่องตัวเองด้วย Supabase CLI สำหรับ development ประจำวัน และ **hosted project** บน cloud ที่คุณจะ deploy ใส่ทีหลัง พอจบบท สี่ค่าที่ [The repo layout →](/fittrack/th/setup/repo-layout/) ใส่ไว้ใน `.env.example` — `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_JWT_SECRET` และ `DATABASE_URL` — จะเป็นของจริง เติมลง `.env` ของคุณ ชี้ไปที่ local stack
 
 ยังไม่มี application code บทนี้เป็น setup บทสุดท้าย: หลังจากนี้ [Supabase Foundation →](/fittrack/th/supabase/) เริ่มโมเดล schema ของ FitTrack บน database ที่คุณตั้งขึ้นตรงนี้
 
-## Why
+## ทำไม
 
-Supabase คือ **managed Postgres บวก service ชุดหนึ่งรอบ ๆ มัน** — Auth (users, JWT, OAuth), auto-generated API, storage และ realtime FitTrack ใช้สองตัวที่สำคัญสำหรับ backend: database กับ Auth สิ่งสำคัญที่บทนี้วางไว้คือคุณไม่ต้องเลือกระหว่าง "dev กับ cloud" กับ "รันทุกอย่างเอง" — **Supabase CLI รัน stack ทั้งชุดแบบ local ใน Docker** `supabase start` ยก Postgres จริง, Auth server (GoTrue), Studio web UI และที่เหลือขึ้นมา ทั้งหมดบน localhost seed ให้ทำงานเหมือน hosted product เป๊ะ ๆ
+Supabase คือ **managed Postgres บวก service ชุดหนึ่งที่ห้อมล้อมอยู่** — Auth (users, JWT, OAuth), auto-generated API, storage และ realtime FitTrack ใช้สองตัวที่สำคัญสำหรับ backend: database กับ Auth สิ่งสำคัญที่บทนี้วางไว้คือคุณไม่ต้องเลือกระหว่าง "dev กับ cloud" กับ "รันทุกอย่างเอง" — **Supabase CLI รัน stack ทั้งชุดแบบ local ใน Docker** `supabase start` ยก Postgres จริง, Auth server (GoTrue), Studio web UI และที่เหลือขึ้นมา ทั้งหมดบน localhost seed ให้ทำงานเหมือน hosted product เป๊ะ ๆ
 
-การ dev แบบ **local-first** เป็น default ที่ถูกต้องด้วยเหตุผลเดียวกับที่ทุก Real-World Project ก่อนหน้ารัน infrastructure ของมันแบบ local: development loop ของคุณไม่เคยขึ้นกับ network หรือ cloud project ตัว shared; คุณ reset database กลับสู่ clean state ได้ในไม่กี่วินาที; migration ถูก test กับ Postgres จริงก่อนที่มันจะแตะ production; และคุณ corrupt shared data โดยบังเอิญไม่ได้เพราะไม่มี shared data — มันอยู่บนเครื่องคุณ hosted project มีไว้สำหรับ **deployment** (Module 13) และสำหรับอะไรก็ตามที่ต้องใช้ cloud จริง ๆ แต่คุณ build และ test กับ local
+การ dev แบบ **local-first** เป็น default ที่ถูกต้องด้วยเหตุผลเดียวกับที่ทุก Real-World Project ก่อนหน้ารัน infrastructure แบบ local: development loop ของคุณไม่เคยขึ้นกับ network หรือ cloud project ตัว shared; คุณ reset database กลับสู่ clean state ได้ในไม่กี่วินาที; migration ถูก test กับ Postgres จริงก่อนจะแตะ production; และคุณ corrupt shared data โดยบังเอิญไม่ได้เพราะไม่มี shared data — ทุกอย่างอยู่บนเครื่องคุณ ส่วน hosted project มีไว้สำหรับ **deployment** (Module 13) และสำหรับอะไรก็ตามที่ต้องใช้ cloud จริง ๆ แต่คุณ build และ test กับ local
 
 สี่ค่าที่ FitTrack ต้องใช้แต่ละตัวมาจากที่เจาะจง และควรรู้ว่าตัวไหนเป็นตัวไหน เพราะ [Auth (Supabase JWT) →](/fittrack/th/auth/) พึ่งพาความต่างนี้:
 
-- **`SUPABASE_URL`** — base URL ของ Supabase API (`http://127.0.0.1:54321` แบบ local) client ใช้มันเพื่อเข้าถึง Auth Public
+- **`SUPABASE_URL`** — base URL ของ Supabase API (`http://127.0.0.1:54321` แบบ local) client ใช้ค่านี้เพื่อเข้าถึง Auth Public
 - **`SUPABASE_ANON_KEY`** — public API key ที่ client แสดงต่อ Supabase Auth ฝังใน app ที่ ship ได้อย่างปลอดภัย Public
-- **`SUPABASE_JWT_SECRET`** — secret ที่ Supabase ใช้ sign JWT ของมัน **backend** ใช้มันเพื่อ *verify* token ที่ client แสดง Server-only — ไม่เคย ship
+- **`SUPABASE_JWT_SECRET`** — secret ที่ Supabase ใช้ sign JWT ฝั่ง **backend** ใช้ค่านี้เพื่อ *verify* token ที่ client แสดง Server-only — ไม่เคย ship
 - **`DATABASE_URL`** — Postgres connection string ตรงที่ FastAPI backend ใช้สำหรับ SQL Server-only
 
 `supabase start` print ทั้งสี่ค่าออกมาพร้อมกัน
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Local-first development (Supabase CLI stack in Docker)** vs. **developing directly against a hosted cloud project**
 
-- **Pros:** ไม่มี network dependency ใน dev loop, reset database ได้ทันทีและฟรี, migration ถูก test กับ Postgres จริงก่อน production และไม่มีความเสี่ยงจะทับ shared data เพราะไม่มีอยู่; มันยังสะท้อนวิธีที่ TaskFlow, DevBlog และ ShopMicro รัน infrastructure ของมันแบบ local
-- **Cons:** มันต้องมี Docker รันอยู่และดึง image ไม่กี่ GB ในครั้งแรก; และ local stack drift จาก setting ของ hosted project ได้ถ้าคุณไม่มีวินัยในการ apply migration เดียวกันกับทั้งสองที่ — ซึ่งเป็นเหตุผลเป๊ะ ๆ ว่าทำไม schema ถึงอยู่ในไฟล์ migration ที่ version-control ไว้ ([Supabase Foundation →](/fittrack/th/supabase/)) ไม่ใช่ในการคลิกบน dashboard
+- **Pros:** ไม่มี network dependency ใน dev loop, reset database ได้ทันทีและฟรี, migration ถูก test กับ Postgres จริงก่อน production และไม่มีความเสี่ยงจะทับ shared data เพราะไม่มีอยู่; และยังสะท้อนวิธีที่ TaskFlow, DevBlog และ ShopMicro รัน infrastructure แบบ local
+- **Cons:** ต้องมี Docker รันอยู่และดึง image ไม่กี่ GB ในครั้งแรก; และ local stack drift จาก setting ของ hosted project ได้ถ้าคุณไม่มีวินัยในการ apply migration เดียวกันกับทั้งสองที่ — นั่นคือเหตุผลเป๊ะ ๆ ว่าทำไม schema ถึงอยู่ในไฟล์ migration ที่ version-control ไว้ ([Supabase Foundation →](/fittrack/th/supabase/)) ไม่ใช่ในการคลิกบน dashboard
 
 **Supabase (managed Postgres + Auth)** vs. **a plain Postgres you run yourself plus a hand-rolled auth system**
 
 - **Pros:** Auth — sign-up, sign-in, password reset, token refresh, OAuth provider และการออก JWT ที่ปลอดภัย — เป็นพื้นที่ใหญ่และ security-sensitive ที่คุณได้มาถูกต้องและฟรี พร้อม client SDK ระดับ first-class; managed hosted Postgres หมายความว่าไม่มี backup, patching หรือ connection infrastructure ให้รันใน production
-- **Cons:** คุณรับ Supabase เป็น dependency พร้อม convention ของมัน (รูปร่าง JWT, ตาราง `auth.users`, วิธีทำ row-level security ของมัน); การเขียนเองจะอยู่ใต้การควบคุมของคุณเต็มที่แต่เป็นโค้ด security-critical จำนวนมากที่ต้องเขียนและ maintain — เป็น trade ที่ FitTrack เลือกเข้าข้าง Supabase โดยตั้งใจ เพราะ auth ไม่ใช่ตัว product
+- **Cons:** คุณรับ Supabase เป็น dependency พร้อม convention ของแพลตฟอร์ม (รูปร่าง JWT, ตาราง `auth.users`, วิธีทำ row-level security); การเขียนเองจะอยู่ใต้การควบคุมของคุณเต็มที่แต่เป็นโค้ด security-critical จำนวนมากที่ต้องเขียนและ maintain — เป็น trade ที่ FitTrack เลือกเข้าข้าง Supabase โดยตั้งใจ เพราะ auth ไม่ใช่ตัว product
 
-## Set it up
+## ติดตั้ง
 
-### 1. Install the Supabase CLI
+### 1. ติดตั้ง Supabase CLI
 
 ```bash
 # macOS (Homebrew); see supabase.com/docs/guides/cli for other platforms
@@ -48,7 +48,7 @@ brew install supabase/tap/supabase
 supabase --version
 ```
 
-### 2. Initialise Supabase in the repo
+### 2. init Supabase ใน repo
 
 จาก repo root:
 
@@ -56,9 +56,9 @@ supabase --version
 supabase init
 ```
 
-คำสั่งนี้สร้าง directory `supabase/` ที่ถือ local config กับโฟลเดอร์ `migrations/` — [Supabase Foundation →](/fittrack/th/supabase/) เติมโฟลเดอร์นั้นให้เต็ม commit `supabase/` ด้วย; มันคือ project configuration ไม่ใช่ secret
+คำสั่งนี้สร้าง directory `supabase/` ที่ถือ local config กับโฟลเดอร์ `migrations/` — [Supabase Foundation →](/fittrack/th/supabase/) เติมโฟลเดอร์นั้นให้เต็ม commit `supabase/` ด้วย; นี่คือ project configuration ไม่ใช่ secret
 
-### 3. Start the local stack
+### 3. เริ่ม local stack
 
 ให้แน่ใจว่า Docker รันอยู่ แล้ว:
 
@@ -66,7 +66,7 @@ supabase init
 supabase start
 ```
 
-รอบแรกดึง image (ไม่กี่นาที) เมื่อเสร็จ มัน print ค่าที่คุณต้องใช้:
+รอบแรกดึง image (ไม่กี่นาที) เมื่อเสร็จ CLI จะ print ค่าที่คุณต้องใช้:
 
 ```txt
          API URL: http://127.0.0.1:54321
@@ -77,7 +77,7 @@ service_role key: eyJhbGciOiExample.service.key
       JWT secret: super-secret-jwt-token-with-at-least-32-characters
 ```
 
-### 4. Fill in `.env`
+### 4. เติมค่าใน `.env`
 
 copy พวกนั้นลงใน `.env` ที่คุณสร้างไว้บทที่แล้ว สังเกตว่า `DATABASE_URL` สลับ `postgresql://` ของ Supabase เป็น async driver scheme ที่ backend ใช้:
 
@@ -88,9 +88,9 @@ SUPABASE_JWT_SECRET=super-secret-jwt-token-with-at-least-32-characters
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:54322/postgres
 ```
 
-### 5. (Later) the hosted project
+### 5. (ไว้ทีหลัง) hosted project
 
-สำหรับ deployment คุณจะสร้าง hosted project ฟรีที่ [supabase.com](https://supabase.com) → **New project** แล้ว link มันด้วย:
+สำหรับ deployment คุณจะสร้าง hosted project ฟรีที่ [supabase.com](https://supabase.com) → **New project** แล้ว link เข้ากับ repo ด้วย:
 
 ```bash
 supabase link --project-ref your-project-ref
@@ -98,7 +98,7 @@ supabase link --project-ref your-project-ref
 
 คุณยังไม่ต้องใช้อันนี้ตอนนี้ — local stack พอสำหรับทุก module จนถึง [Deployment →](/fittrack/th/deployment/) ที่บันทึกไว้ตรงนี้ก็เพื่อให้ภาพสอง environment ครบถ้วน
 
-## Verify
+## ตรวจสอบผล
 
 ยืนยันว่า stack ขึ้นแล้ว:
 
@@ -126,7 +126,7 @@ psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "select versio
 (1 row)
 ```
 
-ยืนยันว่า Auth server ตอบด้วย — มันคือตัวที่ client จะ sign in ใส่:
+ยืนยันว่า Auth server ตอบด้วย — นี่คือตัวที่ client จะ sign in เข้าไป:
 
 ```bash
 curl -s http://127.0.0.1:54321/auth/v1/health
@@ -141,10 +141,10 @@ curl -s http://127.0.0.1:54321/auth/v1/health
 ตรวจสอบความเข้าใจ:
 
 - ในสี่ค่า — `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_JWT_SECRET`, `DATABASE_URL` — ตัวไหน ship ใน client app ได้อย่างปลอดภัย และตัวไหนต้องอยู่บน server? ทำไม backend ถึงต้องการ JWT secret โดยเฉพาะ?
-- `supabase start` รันอะไรบนเครื่องคุณจริง ๆ และทำไมการ dev กับมันถึงดีกว่าการ dev กับ hosted cloud project?
+- `supabase start` รันอะไรบนเครื่องคุณจริง ๆ และทำไมการ dev กับ stack ตัวนี้ถึงดีกว่าการ dev กับ hosted cloud project?
 - ทำไม `DATABASE_URL` ถึงใช้ `postgresql+asyncpg://` ในที่ที่ `supabase start` print `postgresql://`? (คุณจะเห็นคำตอบใน FastAPI Foundation)
 - schema จะอยู่ใน `supabase/migrations/` แทนที่จะคลิกเข้าไปใน Studio ทำแบบนี้กันปัญหาอะไรระหว่าง local กับ hosted database?
 
-## Recap
+## สรุป
 
 FitTrack รันบน **Supabase** — managed Postgres บวก Auth — provision สองแบบ: **local stack** ผ่าน Supabase CLI (`supabase init` แล้ว `supabase start` รัน Postgres, Auth และ Studio ใน Docker) สำหรับ development และ **hosted project** สำหรับ deploy ทีหลัง `supabase start` print สี่ค่าที่ FitTrack ต้องใช้ ซึ่งคุณเติมลง `.env`: `SUPABASE_URL` กับ `SUPABASE_ANON_KEY` (public, ให้ client เข้าถึง Auth) และ `SUPABASE_JWT_SECRET` กับ `DATABASE_URL` (server-only — backend verify token และรัน SQL) คุณ dev แบบ **local-first** เพื่อ loop ที่เร็ว ไม่พึ่ง network และ reset ได้ โดยเก็บ schema ไว้ใน migration ที่ version-control เพื่อให้ local กับ hosted ไม่ drift กัน `supabase status`, การเชื่อมต่อ `psql` และ GoTrue health check ยืนยันว่า stack ทำงานอยู่ นั่นจบ setup — ต่อไป [Supabase Foundation →](/fittrack/th/supabase/) โมเดล schema ของ FitTrack (`profiles`, `exercises`, `workouts`, `workout_sets`) เป็น migration ชุดแรกกับ database นี้

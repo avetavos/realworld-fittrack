@@ -1,43 +1,43 @@
 ---
 title: SvelteKit auth with Supabase
-description: "web/ — SvelteKit app ที่ scaffold ด้วย `sv create` แล้ว sign in ผ่าน Supabase ด้วย @supabase/supabase-js หน้า sign-in เรียก signInWithPassword, sync session ของ browser ไปที่ cookie, hooks.server verify มันเข้า locals, และ +layout.server.ts ส่ง session ให้ทุก route env มาจาก $env ตรวจสอบด้วยการ sign in แล้วเห็น session ทั้งฝั่ง client และ server"
+description: "web/ — SvelteKit app ที่ scaffold ด้วย `sv create` แล้ว sign in ผ่าน Supabase ด้วย @supabase/supabase-js หน้า sign-in เรียก signInWithPassword, sync session ของ browser ไปที่ cookie, hooks.server verify token เข้า locals, และ +layout.server.ts ส่ง session ให้ทุก route env มาจาก $env ตรวจสอบด้วยการ sign in แล้วเห็น session ทั้งฝั่ง client และ server"
 sidebar:
   order: 1
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-`web/` — **Svelte web companion** คือ client ตัวที่สองใน FitTrack และเป็นตัวที่เบากว่าในสองตัว ในขณะที่ Flutter app เป็น client หลักที่ทำงาน offline ได้และคุณใช้ log workout จากมัน web companion เป็น dashboard ที่เน้นอ่าน คุณเปิดบน laptop เพื่อดู workout ล่าสุดและ progress อย่างรวดเร็ว มัน sign in ผ่าน **Supabase Auth ตัวเดียวกัน** กับที่ Flutter app ใช้ และในบทถัดไปมันจะอ่าน **FastAPI backend ตัวเดียวกัน**
+`web/` — **Svelte web companion** คือ client ตัวที่สองใน FitTrack และเบากว่าอีกตัว ส่วน Flutter app เป็น client หลักที่ทำงาน offline ได้และใช้ log workout ตัว web companion เป็น dashboard ที่เน้นอ่าน คุณเปิดบน laptop เพื่อดู workout ล่าสุดและ progress อย่างรวดเร็ว หน้าเว็บ sign in ผ่าน **Supabase Auth ตัวเดียวกัน** กับที่ Flutter app ใช้ และในบทถัดไปจะอ่าน **FastAPI backend ตัวเดียวกัน**
 
-บทนี้ตั้ง SvelteKit project ขึ้นมาและทำให้ authentication ทำงานครบ end to end คุณ scaffold `web/` ด้วย Svelte CLI, เพิ่ม **`@supabase/supabase-js`**, ต่อสาย Supabase URL และ anon key ผ่าน **`$env`**, แล้วสร้างหน้า sign-in ที่เรียก `signInWithPassword` ส่วนที่ยุ่งยากของ app ที่ render ฝั่ง server คือการทำให้ Supabase session ของ browser มองเห็นได้บน server — เพื่อให้ `load` function ที่เรียก FastAPI แนบ JWT ได้ เราแก้ด้วยการ sync access token ไปที่ cookie, verify มันใน **`hooks.server.ts`** เข้า `event.locals`, แล้ว expose มันจาก **`+layout.server.ts`** ให้ทุก route
+บทนี้ตั้ง SvelteKit project ขึ้นมาและทำให้ authentication ทำงานครบ end to end คุณ scaffold `web/` ด้วย Svelte CLI, เพิ่ม **`@supabase/supabase-js`**, ต่อสาย Supabase URL และ anon key ผ่าน **`$env`**, แล้วสร้างหน้า sign-in ที่เรียก `signInWithPassword` ส่วนที่ยุ่งยากของ app ที่ render ฝั่ง server คือการทำให้ Supabase session ของ browser มองเห็นได้บน server — เพื่อให้ `load` function ที่เรียก FastAPI แนบ JWT ได้ เราแก้ด้วยการ sync access token ไปที่ cookie, verify token นั้นใน **`hooks.server.ts`** เข้า `event.locals`, แล้ว expose session จาก **`+layout.server.ts`** ให้ทุก route
 
 พอจบบท คุณจะได้ SvelteKit app ที่ session ของ user ซึ่ง sign in แล้วมีอยู่ทั้งฝั่ง client (สำหรับ `supabase-js`) และฝั่ง server (สำหรับเรียก backend) [The dashboard →](/fittrack/th/svelte-companion/dashboard/) จะใช้ session ฝั่ง server นั้นอ่าน `GET /workouts` และ `GET /progress/*`
 
-## Why
+## ทำไม
 
-Flutter app กับ web companion นี้เป็นสอง front end บน backend ตัวเดียว และมันทำ authentication แบบเดียวกัน: Supabase client SDK sign in ให้ user แล้วถือ JWT ไว้ และทุกครั้งที่เรียก backend ก็แนบ JWT นั้นไปให้ FastAPI verify บน web ตัว SDK คือ `@supabase/supabase-js` ซึ่งเป็นญาติฝั่ง browser ของ `supabase_flutter` การใช้ Supabase Auth ซ้ำหมายความว่าไม่มี account ชุดที่สอง ไม่มี password store ชุดที่สอง และไม่มี auth code ใน backend ที่ต้องเขียนซ้ำ — FastAPI verify token ที่ Supabase ออกให้ Flutter client อยู่แล้ว และมัน verify token พวกนี้แบบเดียวกันเป๊ะ
+Flutter app กับ web companion นี้เป็นสอง front end บน backend ตัวเดียว และทำ authentication แบบเดียวกัน: Supabase client SDK sign in ให้ user แล้วถือ JWT ไว้ และทุกครั้งที่เรียก backend ก็แนบ JWT นั้นไปให้ FastAPI verify บน web ตัว SDK คือ `@supabase/supabase-js` ที่เป็นญาติฝั่ง browser ของ `supabase_flutter` การใช้ Supabase Auth ซ้ำหมายความว่าไม่มี account ชุดที่สอง ไม่มี password store ชุดที่สอง และไม่มี auth code ใน backend ที่ต้องเขียนซ้ำ — FastAPI verify token ที่ Supabase ออกให้ Flutter client อยู่แล้ว และ verify token จาก web ด้วยวิธีเดียวกันเป๊ะ
 
-SvelteKit ทำให้เรื่องหนึ่งซับซ้อนขึ้น: มัน render บน server `@supabase/supabase-js` มีความสุขที่สุดใน browser ที่มัน persist session ลง `localStorage` และ refresh token ให้เองอัตโนมัติ แต่ code โหลดข้อมูลที่ควรเรียก FastAPI — SvelteKit `load` function — รันบน server ก่อน ซึ่ง `localStorage` ไม่มีอยู่และ session ของ browser มองไม่เห็น ถ้าเรา sign in แค่ฝั่ง client เท่านั้น server จะไม่มี token ไป forward ให้ backend
+SvelteKit ทำให้เรื่องหนึ่งซับซ้อนขึ้น: ตัว framework render บน server ส่วน `@supabase/supabase-js` ทำงานได้ดีที่สุดใน browser เพราะ persist session ลง `localStorage` และ refresh token ให้เองอัตโนมัติ แต่ code โหลดข้อมูลที่ควรเรียก FastAPI — SvelteKit `load` function — รันบน server ก่อน ซึ่ง `localStorage` ไม่มีอยู่และ session ของ browser มองไม่เห็น ถ้าเรา sign in แค่ฝั่ง client เท่านั้น server จะไม่มี token ไป forward ให้ backend
 
-วิธีแก้คือทำให้ session ข้ามเส้นแบ่งนี้ไปได้ หลังจาก sign in ฝั่ง browser เราเขียน access token ลง cookie **`hooks.server.ts`** รันทุก request อ่าน cookie นั้น verify มันกับ Supabase แล้วเก็บผลลัพธ์ไว้บน **`event.locals`** **`+layout.server.ts`** อ่าน `locals` แล้ว return session เป็น `load` data เพื่อให้ทุกหน้าและทุก server `load` เห็นมันได้ นั่นคือ session pipeline ทั้งหมด และบท dashboard ก็เสียบเข้ากับมันตรง ๆ
+วิธีแก้คือทำให้ session ข้ามเส้นแบ่งนี้ไปได้ หลังจาก sign in ฝั่ง browser เราเขียน access token ลง cookie **`hooks.server.ts`** รันทุก request อ่าน cookie นั้น verify กับ Supabase แล้วเก็บผลลัพธ์ไว้บน **`event.locals`** จากนั้น **`+layout.server.ts`** อ่าน `locals` แล้ว return session เป็น `load` data เพื่อให้ทุกหน้าและทุก server `load` เห็น session ได้ นั่นคือ session pipeline ทั้งหมด และบท dashboard ก็เสียบเข้ากับ pipeline นี้ตรง ๆ
 
-ส่วน configuration มาผ่าน **`$env`** ไม่ใช่ `import.meta.env` หรือ `process.env` `$env` module ของ SvelteKit แยกตัวแปรตาม visibility: `$env/static/public` expose เฉพาะชื่อที่ขึ้นต้นด้วย `PUBLIC_` และปลอดภัยที่จะส่งไป browser ส่วน `$env/static/private` ไม่เคยออกจาก server และจะปฏิเสธไม่ยอมให้ import เข้า client code Supabase URL และ anon key เป็น public โดยการออกแบบอยู่แล้ว (anon key ตั้งใจให้ส่งออกไปได้) ดังนั้นมันอยู่เป็น `PUBLIC_` var — และ `$env` ทำให้เส้นแบ่ง visibility นั้นชัดเจนและถูกบังคับตอน build
+ส่วน configuration มาผ่าน **`$env`** ไม่ใช่ `import.meta.env` หรือ `process.env` `$env` module ของ SvelteKit แยกตัวแปรตาม visibility: `$env/static/public` expose เฉพาะชื่อที่ขึ้นต้นด้วย `PUBLIC_` และปลอดภัยที่จะส่งไป browser ส่วน `$env/static/private` ไม่เคยออกจาก server และจะปฏิเสธไม่ยอมให้ import เข้า client code Supabase URL และ anon key เป็น public โดยการออกแบบอยู่แล้ว (anon key ตั้งใจให้ส่งออกไปได้) ทั้งคู่จึงอยู่เป็น `PUBLIC_` var — และ `$env` ทำให้เส้นแบ่ง visibility นั้นชัดเจนและถูกบังคับตอน build
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Reusing Supabase Auth in the web client** vs. **a separate web login against FastAPI**
 
 - **Pros:** identity system เดียวข้าม Flutter และ web — user ชุดเดียว, password reset แบบเดียว, JWT format เดียวที่ FastAPI verify อยู่แล้ว `supabase-js` จัดการ token refresh และ persistence ให้คุณ และไม่มี auth endpoint ใหม่ให้เขียนหรือทำให้ปลอดภัยบน backend
-- **Cons:** คุณรับ session model ของ Supabase มาทั้งชุด รวมถึงเรื่อง browser-vs-server ที่บทนี้ต้องเขียนโค้ดอ้อมไปแก้ และคุณผูกกับ SDK และ token lifecycle ของ Supabase แทนที่จะเป็นเจ้าของมันเอง สำหรับ companion client ที่ควรทำตัวเหมือน client หลักเป๊ะ ๆ การใช้ auth system ร่วมกันคุ้มค่าชัดเจน
+- **Cons:** คุณรับ session model ของ Supabase มาทั้งชุด รวมถึงเรื่อง browser-vs-server ที่บทนี้ต้องเขียนโค้ดอ้อมไปแก้ และคุณผูกกับ SDK และ token lifecycle ของ Supabase แทนที่จะเป็นเจ้าของเอง สำหรับ companion client ที่ควรทำตัวเหมือน client หลักเป๊ะ ๆ การใช้ auth system ร่วมกันคุ้มค่าชัดเจน
 
 **Syncing the session to a cookie for the server** vs. **`@supabase/ssr` with full server-side auth**
 
-- **Pros:** วิธี `supabase-js` + cookie ล้วน ๆ นั้นเล็กและโปร่งใส — คุณเห็นชัดว่า token ถูก set, verify, และ forward ที่ไหน ซึ่งเหมาะกับ companion ที่เบาและเน้นอ่าน มันปล่อยให้ `supabase-js` ทำสิ่งที่มันเก่งใน browser และขอให้ server แค่ verify token ที่มันได้รับมา
-- **Cons:** มันเป็น bridge ที่ทำเองด้วยมือ ไม่ใช่ตัวที่ framework รับรอง — `@supabase/ssr` จัดการ cookie, refresh, และ SSR session hydration ให้คุณ และเป็นตัวเลือกที่ถูกต้องสำหรับ web app ที่มี auth เยอะ ฝั่ง web ของ FitTrack อ่านมากกว่าเขียน surface ที่เล็กกว่าจึงชนะที่นี่ หยิบ `@supabase/ssr` มาใช้เมื่อ web client โตขึ้นจนมี write flow จริงจัง
+- **Pros:** วิธี `supabase-js` + cookie ล้วน ๆ นั้นเล็กและโปร่งใส — คุณเห็นชัดว่า token ถูก set, verify, และ forward ที่ไหน ซึ่งเหมาะกับ companion ที่เบาและเน้นอ่าน วิธีนี้ปล่อยให้ `supabase-js` ทำสิ่งที่ถนัดใน browser และขอให้ server แค่ verify token ที่ได้รับมา
+- **Cons:** นี่คือ bridge ที่ทำเองด้วยมือ ไม่ใช่ตัวที่ framework รับรอง — `@supabase/ssr` จัดการ cookie, refresh, และ SSR session hydration ให้คุณ และเป็นตัวเลือกที่ถูกต้องสำหรับ web app ที่มี auth เยอะ ฝั่ง web ของ FitTrack อ่านมากกว่าเขียน surface ที่เล็กกว่าจึงชนะที่นี่ หยิบ `@supabase/ssr` มาใช้เมื่อ web client โตขึ้นจนมี write flow จริงจัง
 
-## Set it up
+## ติดตั้ง
 
-### 1. Scaffold `web/` with the Svelte CLI
+### 1. Scaffold `web/` ด้วย Svelte CLI
 
 จาก repo root สร้าง SvelteKit project (นี่คือ CLI ตัวใหม่ ส่วน `npm create svelte@latest web` ยังใช้ได้และพาคุณเข้า prompt ชุดเดียวกัน):
 
@@ -55,7 +55,7 @@ npm install @supabase/supabase-js
 
 ### 2. `web/.env`
 
-web client ต้องใช้ Supabase project URL และ **anon** (public) key — ค่าเดียวกับที่ Flutter app ใช้ และเป็นค่าเดียวกับใน Module 1 prefix `PUBLIC_` คือสิ่งที่ทำให้ `$env/static/public` expose มันไป browser ได้:
+web client ต้องใช้ Supabase project URL และ **anon** (public) key — ค่าเดียวกับที่ Flutter app ใช้ และเป็นค่าเดียวกับใน Module 1 prefix `PUBLIC_` คือสิ่งที่ทำให้ `$env/static/public` expose ค่าพวกนี้ไป browser ได้:
 
 ```bash
 # web/.env — the anon key is public by design; never put the JWT secret here.
@@ -65,7 +65,7 @@ PUBLIC_SUPABASE_ANON_KEY=your-local-anon-key
 
 ### 3. `src/lib/supabase.ts`
 
-Supabase client ฝั่ง browser ตัวเดียวที่ทั้ง app ใช้ร่วมกัน มันอ่าน config จาก `$env/static/public` ดังนั้นชื่อตัวแปรถูกตรวจตอน build:
+Supabase client ฝั่ง browser ตัวเดียวที่ทั้ง app ใช้ร่วมกัน อ่าน config จาก `$env/static/public` ดังนั้นชื่อตัวแปรถูกตรวจตอน build:
 
 ```ts
 // src/lib/supabase.ts — the browser Supabase client.
@@ -79,7 +79,7 @@ export const supabase = createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_K
 
 ### 4. `src/routes/signin/+page.svelte`
 
-หน้า sign-in มันเรียก `signInWithPassword` และเมื่อสำเร็จก็เขียน access token ลง cookie เพื่อให้ server เห็น session แล้วพากลับหน้า home (syntax runes ของ Svelte 5 เปลี่ยน `$state` เป็น `let` ถ้าคุณอยู่บน Svelte 4):
+หน้า sign-in เรียก `signInWithPassword` และเมื่อสำเร็จก็เขียน access token ลง cookie เพื่อให้ server เห็น session แล้วพากลับหน้า home (syntax runes ของ Svelte 5 เปลี่ยน `$state` เป็น `let` ถ้าคุณอยู่บน Svelte 4):
 
 ```svelte
 <!-- src/routes/signin/+page.svelte -->
@@ -126,7 +126,7 @@ export const supabase = createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_K
 
 ### 5. `src/hooks.server.ts`
 
-`hooks.server.ts` รันทุก server request มันอ่าน cookie, ขอให้ Supabase verify token (เช็ค signature + expiry จริง ไม่ใช่เชื่อแบบมืด ๆ) แล้ววาง session ที่ได้ลงบน `event.locals` ให้ request ที่เหลือใช้:
+`hooks.server.ts` รันทุก server request โดยอ่าน cookie, ขอให้ Supabase verify token (เช็ค signature + expiry จริง ไม่ใช่เชื่อแบบมืด ๆ) แล้ววาง session ที่ได้ลงบน `event.locals` ให้ request ที่เหลือใช้:
 
 ```ts
 // src/hooks.server.ts — verify the access token once per request into locals.
@@ -154,7 +154,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 };
 ```
 
-บอก TypeScript ว่าเราวางอะไรไว้บน `locals` ด้วยการ declare มันใน `src/app.d.ts`:
+บอก TypeScript ว่าเราวางอะไรไว้บน `locals` ด้วยการ declare type ใน `src/app.d.ts`:
 
 ```ts
 // src/app.d.ts
@@ -174,7 +174,7 @@ export {};
 
 ### 6. `src/routes/+layout.server.ts`
 
-`+layout.server.ts` `load` ที่ root รันบน server ให้ทุก route แล้ว return session เพื่อให้ทุกหน้าและทุก child `load` ได้รับมัน เพราะมันอยู่ใน layout ทั้ง app จึงใช้ source of truth เดียวสำหรับ "ใคร sign in อยู่":
+`+layout.server.ts` `load` ที่ root รันบน server ให้ทุก route แล้ว return session เพื่อให้ทุกหน้าและทุก child `load` ได้รับต่อ เพราะอยู่ใน layout ระดับ app ทั้งหมด จึงใช้ source of truth เดียวสำหรับ "ใคร sign in อยู่":
 
 ```ts
 // src/routes/+layout.server.ts — expose the verified session to every route.
@@ -185,7 +185,7 @@ export const load: LayoutServerLoad = ({ locals }) => {
 };
 ```
 
-ใช้มันใน root layout เพื่อแสดง auth state และ link ไปหน้า sign-in:
+ใช้ session ใน root layout เพื่อแสดง auth state และ link ไปหน้า sign-in:
 
 ```svelte
 <!-- src/routes/+layout.svelte -->
@@ -204,9 +204,9 @@ export const load: LayoutServerLoad = ({ locals }) => {
 {@render children()}
 ```
 
-## Verify
+## ตรวจสอบผล
 
-ตรวจให้แน่ใจว่า Supabase ตัว local ของคุณรันอยู่ (จาก Module 2) และคุณมี user ให้ sign in ถ้าคุณต้องการสักตัว สร้างมันด้วย Supabase CLI:
+ตรวจให้แน่ใจว่า Supabase ตัว local ของคุณรันอยู่ (จาก Module 2) และคุณมี user ให้ sign in ถ้ายังไม่มี สร้างด้วย Supabase CLI:
 
 ```bash
 supabase start
@@ -223,7 +223,7 @@ npm run dev
   ➜  Local:   http://localhost:5173/
 ```
 
-เปิด [http://localhost:5173/signin](http://localhost:5173/signin), ใส่ email และ password ที่ถูกต้อง แล้ว submit เมื่อสำเร็จคุณจะถูก redirect กลับ home และ nav แสดง **Signed in as …** — พิสูจน์ว่า session ฝั่ง browser มีอยู่ ตอนนี้พิสูจน์ว่า *server* เห็นมันด้วย: reload หน้า (ครบรอบ server เต็ม ๆ) แล้ว nav ยังแสดง email ของคุณ เพราะ `hooks.server.ts` อ่าน cookie และ `+layout.server.ts` return session ยืนยันว่า cookie อยู่ครบใน browser devtools ใต้ Application → Cookies:
+เปิด [http://localhost:5173/signin](http://localhost:5173/signin), ใส่ email และ password ที่ถูกต้อง แล้ว submit เมื่อสำเร็จระบบจะ redirect กลับ home และ nav แสดง **Signed in as …** — พิสูจน์ว่า session ฝั่ง browser มีอยู่ ทีนี้มาพิสูจน์ว่า *server* เห็น session ด้วย: reload หน้า (ครบรอบ server เต็ม ๆ) แล้ว nav ยังแสดง email ของคุณ เพราะ `hooks.server.ts` อ่าน cookie และ `+layout.server.ts` return session ยืนยันว่า cookie อยู่ครบใน browser devtools ใต้ Application → Cookies:
 
 ```txt
 sb-access-token   eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
@@ -242,10 +242,10 @@ svelte-check found 0 errors and 0 warnings
 ตรวจสอบความเข้าใจ:
 
 - ทำไม SvelteKit `load` function ถึงมองไม่เห็น session ที่ `supabase-js` เก็บไว้ใน browser และ cookie bridge แก้ปัญหาอะไร?
-- `supabase.auth.getUser(token)` ใน `hooks.server.ts` ตรวจอะไรจริง ๆ และทำไมมันถึงแข็งแรงกว่าแค่ decode payload ของ token?
-- ทำไม Supabase URL และ anon key ถึงมาจาก `$env/static/public` พร้อม prefix `PUBLIC_` ในขณะที่ JWT secret ต้องไม่ปรากฏใน project นี้เลย?
+- `supabase.auth.getUser(token)` ใน `hooks.server.ts` ตรวจอะไรจริง ๆ และทำไมถึงแข็งแรงกว่าแค่ decode payload ของ token?
+- ทำไม Supabase URL และ anon key ถึงมาจาก `$env/static/public` พร้อม prefix `PUBLIC_` ส่วน JWT secret ต้องไม่ปรากฏใน project นี้เลย?
 - หลัง sign in สำเร็จ ทำไมเราถึงเรียก `invalidateAll()` ก่อนจะ navigate กลับ home แทนที่จะแค่ `goto('/')`?
 
-## Recap
+## สรุป
 
 `web/` เป็น SvelteKit app ที่ scaffold ด้วย `sv create` และต่อสายเข้ากับ Supabase Auth ผ่าน `@supabase/supabase-js` browser client ที่ใช้ร่วมกัน (`src/lib/supabase.ts`) อ่าน config `PUBLIC_` จาก `$env/static/public` หน้า `/signin` เรียก `signInWithPassword` แล้ว sync access token ไปที่ cookie `hooks.server.ts` verify cookie นั้นทุก request เข้า `event.locals` และ `+layout.server.ts` ส่ง session ที่ได้ให้ทุก route ตอนนี้ session อยู่ทั้งสองฝั่งของเส้นแบ่ง render และ `npm run check` ผ่านสะอาด ต่อไป [The dashboard →](/fittrack/th/svelte-companion/dashboard/) ใช้ `locals.accessToken` เรียก FastAPI backend ตัวเดียวกัน — `GET /workouts` และ `GET /progress/*` — แล้ว render workout ล่าสุดและ progress ของ user

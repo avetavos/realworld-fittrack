@@ -1,19 +1,19 @@
 ---
 title: Next steps
-description: "FitTrack ไปทางไหนต่อจากนี้: ส่วนขยายที่เป็นรูปธรรม — training programs, social, nutrition, offline sync, push notifications, observability จริง, CI/CD, rate limiting และ caching — แต่ละอันพร้อมสิ่งที่มันสอนและตำแหน่งที่มันเสียบเข้ากับระบบที่คุณสร้างไว้แล้ว หน้าสุดท้ายของคอร์ส ปิดวงกลับไปที่ architecture และ GitHub repo"
+description: "FitTrack ไปทางไหนต่อจากนี้: ส่วนขยายที่เป็นรูปธรรม — training programs, social, nutrition, offline sync, push notifications, observability จริง, CI/CD, rate limiting และ caching — แต่ละอันพร้อมบอกว่าสอนอะไรและเสียบเข้ากับระบบที่คุณสร้างไว้แล้วตรงไหน หน้าสุดท้ายของคอร์ส ปิดวงกลับไปที่ architecture และ GitHub repo"
 sidebar:
   order: 2
 ---
 
-## Where FitTrack goes from here
+## FitTrack ไปต่อทางไหนจากนี้
 
-คุณมี slice ของ product ที่ deploy แล้วและซื่อตรง: client สองตัว, FastAPI backend เดียว, managed Supabase, tests, และ container บน cloud [recap →](/fittrack/th/wrap-up/recap/) บอกชื่อสิ่งที่ตั้งใจตัดออกไปแล้ว หน้านี้เปลี่ยนการละเว้นเหล่านั้น — บวกกับข้อกังวลเรื่อง production อีกไม่กี่อย่าง — ให้เป็น roadmap แต่ละส่วนขยายลิสต์ **สิ่งที่มันสอน** และ **ที่ที่มันเสียบเข้า** ไม่มีอันไหนเป็นการเขียนใหม่ ทุกอันห้อยอยู่บน seam ที่คุณสร้างไว้แล้ว
+คุณมี slice ของ product ที่ deploy แล้วและซื่อตรง: client สองตัว, FastAPI backend เดียว, managed Supabase, tests, และ container บน cloud [recap →](/fittrack/th/wrap-up/recap/) บอกชื่อสิ่งที่ตั้งใจตัดออกไปแล้ว หน้านี้เปลี่ยนการละเว้นเหล่านั้น — บวกกับข้อกังวลเรื่อง production อีกไม่กี่อย่าง — ให้เป็น roadmap แต่ละส่วนขยายบอก **สิ่งที่ได้เรียนรู้** และ **จุดที่เสียบเข้า** ไม่มีอันไหนเป็นการเขียนใหม่ ทุกอันห้อยอยู่บน seam ที่คุณสร้างไว้แล้ว
 
 เลือกตามสิ่งที่คุณอยากเรียนต่อ ไม่ใช่ตามลำดับ
 
 ### Training programs & plans
 
-- **Teaches:** การ model ข้อมูลแบบ prescriptive (plan คือ *template* ของงานในอนาคต) และการ generate scheduled session จากมัน — รูปร่างที่ต่างจริง ๆ จากตาราง "log สิ่งที่เกิดขึ้น" ที่คุณมี
+- **Teaches:** การ model ข้อมูลแบบ prescriptive (plan คือ *template* ของงานในอนาคต) และการ generate scheduled session จาก template นั้น — รูปร่างที่ต่างจริง ๆ จากตาราง "log สิ่งที่เกิดขึ้น" ที่คุณมี
 - **Plugs in:** ตาราง `programs` / `plan_days` ใหม่ผ่าน [Supabase migration](/fittrack/th/supabase/schema-and-migrations/), router `programs` ข้าง ๆ [workouts](/fittrack/th/workouts/logging-sessions/), และ action "เริ่ม session วันนี้จาก plan ของฉัน" ใน [Flutter tracking UI](/fittrack/th/flutter-tracking/logging-ui/)
 
 ### Social & sharing
@@ -48,13 +48,13 @@ sidebar:
 
 ### Rate limiting & caching
 
-- **Teaches:** การปกป้องและเร่ง backend — per-user rate limit และการ cache read ที่ร้อน ([progress aggregations](/fittrack/th/progress/aggregation-queries/) คือตัวเลือกชัดเจน เพราะมันคำนวณตัวเลขเดิมซ้ำ)
+- **Teaches:** การปกป้องและเร่ง backend — per-user rate limit และการ cache read ที่ร้อน ([progress aggregations](/fittrack/th/progress/aggregation-queries/) คือตัวเลือกชัดเจน เพราะคำนวณตัวเลขเดิมซ้ำ ๆ)
 - **Plugs in:** middleware บวก Redis instance ที่ API คุยด้วย; id จาก [`get_current_user`](/fittrack/th/auth/current-user/) กลายเป็น rate-limit key ตามธรรมชาติ
 
-## The end of the course
+## ปิดท้ายคอร์ส
 
-นั่นคือ FitTrack คุณเริ่มจาก directory ว่างเปล่ากับ `uv` และจบด้วย native app ที่ deploy แล้ว, web companion, FastAPI backend ที่มี test, และ managed Supabase อยู่เบื้องหลัง — บวกกับชุดการตัดสินใจเชิงสถาปัตยกรรมที่คุณ [defend และ map ได้ชัด](/fittrack/th/wrap-up/recap/) ของทุกอย่างที่ระบบทำและทุกอย่างที่มันตั้งใจไม่ทำ
+นั่นคือ FitTrack คุณเริ่มจาก directory ว่างเปล่ากับ `uv` และจบด้วย native app ที่ deploy แล้ว, web companion, FastAPI backend ที่มี test, และ managed Supabase อยู่เบื้องหลัง — บวกกับชุดการตัดสินใจเชิงสถาปัตยกรรมที่คุณ [defend และ map ได้ชัด](/fittrack/th/wrap-up/recap/) ของทุกอย่างที่ระบบทำและทุกอย่างที่ตั้งใจไม่ทำ
 
-ถ้าคุณอยากกลับไปดูรูปร่างของทั้งหมดอีกครั้ง [architecture overview →](/fittrack/th/introduction/architecture/) อ่านแล้วรู้สึกต่างออกไปตอนนี้ที่คุณสร้างทุกกล่องใน diagram ของมันมาแล้ว
+ถ้าคุณอยากกลับไปดูรูปร่างของทั้งหมดอีกครั้ง [architecture overview →](/fittrack/th/introduction/architecture/) อ่านแล้วรู้สึกต่างออกไปตอนนี้ที่คุณสร้างทุกกล่องใน diagram นั้นมาแล้ว
 
-Source เต็มอยู่ที่ **[github.com/avetavos/realworld-fittrack](https://github.com/avetavos/realworld-fittrack)** — clone มัน, fork มัน, แล้วพามันไปที่ไหนก็ได้ที่คุณชอบ ไม่ว่าคุณจะสร้างอะไรต่อ ตอนนี้คุณรู้แล้วว่าชิ้นส่วนต่าง ๆ ประกอบกันอย่างไร ไป log some sets กัน
+Source เต็มอยู่ที่ **[github.com/avetavos/realworld-fittrack](https://github.com/avetavos/realworld-fittrack)** — clone, fork, แล้วพาไปที่ไหนก็ได้ที่คุณชอบ ไม่ว่าคุณจะสร้างอะไรต่อ ตอนนี้คุณรู้แล้วว่าชิ้นส่วนต่าง ๆ ประกอบกันอย่างไร ไป log some sets กัน

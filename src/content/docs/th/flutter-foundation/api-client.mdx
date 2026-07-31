@@ -5,21 +5,21 @@ sidebar:
   order: 3
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-ชิ้นส่วนเดียวที่ทำให้ Flutter app คุยกับ backend ของ FitTrack ได้: **API client แบบ typed** สร้างบน **Dio** และ expose เป็น Riverpod provider มันรู้ base URL ของ API และ — นี่คือหัวใจ — **interceptor** ดึง **`accessToken` ของ Supabase session ปัจจุบัน** มาแนบเป็น header `Authorization: Bearer` บน *ทุก* request เพื่อให้ [FastAPI backend verify JWT ได้ →](/fittrack/th/auth/) และรู้ว่าเป็นผู้ใช้คนไหน มันยัง map transport error ของ Dio ไปเป็น domain `ApiException` ที่สะอาดให้ UI แสดงได้
+ชิ้นส่วนเดียวที่ทำให้ Flutter app คุยกับ backend ของ FitTrack ได้: **API client แบบ typed** สร้างบน **Dio** และ expose เป็น Riverpod provider client ตัวนี้รู้ base URL ของ API และ — นี่คือหัวใจ — **interceptor** ดึง **`accessToken` ของ Supabase session ปัจจุบัน** มาแนบเป็น header `Authorization: Bearer` บน *ทุก* request เพื่อให้ [FastAPI backend verify JWT ได้ →](/fittrack/th/auth/) และรู้ว่าเป็นผู้ใช้คนไหน และยัง map transport error ของ Dio ไปเป็น domain `ApiException` ที่สะอาดให้ UI แสดงได้
 
 พอจบบท คุณจะได้ class `FitTrackApi` ที่มี typed method ครอบ [endpoint ตาม contract](/fittrack/th/workouts/) — `GET /me`, `GET /exercises`, `POST /workouts`, `GET /progress/*` — และ `apiProvider` ที่หน้าจอไหนก็ `ref.watch` ได้ จากนั้น [tracking module →](/fittrack/th/flutter-tracking/) สร้างหน้า logging และ history ทั้งหมดบน client ตัวเดียวนี้ โดยไม่ต้องแตะรายละเอียด HTTP อีกเลย
 
-## Why
+## ทำไม
 
-ทุก call ที่ authenticate ไป FastAPI ต้องการสองอย่างเหมือนกัน: **base URL** ที่ถูก และ header **`Authorization: Bearer <jwt>`** ที่ valid การกระจายสิ่งนั้นไปตามหน้าจอ — อ่าน session, จัดรูป header, จำ URL — คือการซ้ำซากแบบเดียวกับที่ทำให้ codebase เน่า FitTrack จึงรวมมันไว้ที่ **client ตัวเดียว** ที่เป็นเจ้าของทั้งสองเรื่อง แล้วทุก feature เรียก typed method (`api.listExercises()`) แทน raw HTTP
+ทุก call ที่ authenticate ไป FastAPI ต้องการสองอย่างเหมือนกัน: **base URL** ที่ถูก และ header **`Authorization: Bearer <jwt>`** ที่ valid การกระจายสิ่งนั้นไปตามหน้าจอ — อ่าน session, จัดรูป header, จำ URL — คือการซ้ำซากแบบเดียวกับที่ทำให้ codebase เน่า FitTrack จึงรวมไว้ที่ **client ตัวเดียว** ที่เป็นเจ้าของทั้งสองเรื่อง แล้วทุก feature เรียก typed method (`api.listExercises()`) แทน raw HTTP
 
 **Dio** คุ้มที่จะใช้แทน `http` package เปล่า ๆ ก็เพราะ **interceptor**: middleware ที่รันบนทุก request `onRequest` interceptor ตัวเดียวอ่าน `accessToken` ปัจจุบันของ `sessionProvider` แล้วประทับ header จึงไม่มี call site ไหนต้องคิดเรื่อง auth อีกเลย การอ่าน token *ภายใน* interceptor — ไม่ใช่ครั้งเดียวตอนสร้าง — สำคัญ: Supabase refresh JWT เงียบ ๆ อยู่เบื้องหลัง และ interceptor คว้าตัว *ปัจจุบัน* เสมอ request จึงไม่เคยพก token เก่า Dio ยังให้ `DioException` ที่มีโครงสร้าง และ config base-URL/timeout ในที่เดียว
 
-การ wrap client ใน **Riverpod provider** ทำให้มันสอดคล้องกับส่วนอื่นของแอปและ compose ได้: `apiProvider` พึ่ง `supabaseProvider` (เพื่อเอา token) แบบ declarative เดียวกับที่ทุก provider ทำ และในเทสต์คุณ override `apiProvider` ด้วยตัวปลอมได้ widget test จึงไม่แตะ network เลย สุดท้าย client แปลง `DioException` เป็น **`ApiException`** เล็ก ๆ ที่มี status code และ message — UI จึงตอบสนองต่อ *"401 unauthorized"* หรือ *"404 not found"* ไม่ใช่ type ระดับ transport ของ Dio ที่รั่วเข้ามาใน widget
+การ wrap client ใน **Riverpod provider** ทำให้สอดคล้องกับส่วนอื่นของแอปและ compose ได้: `apiProvider` พึ่ง `supabaseProvider` (เพื่อเอา token) แบบ declarative เดียวกับที่ทุก provider ทำ และในเทสต์คุณ override `apiProvider` ด้วยตัวปลอมได้ widget test จึงไม่แตะ network เลย สุดท้าย client แปลง `DioException` เป็น **`ApiException`** เล็ก ๆ ที่มี status code และ message — UI จึงตอบสนองต่อ *"401 unauthorized"* หรือ *"404 not found"* ไม่ใช่ type ระดับ transport ของ Dio ที่รั่วเข้ามาใน widget
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Dio with an auth interceptor** vs. **the `http` package, attaching the header at each call site**
 
@@ -29,11 +29,11 @@ sidebar:
 **One shared client owning base URL + token** vs. **per-feature clients or ad-hoc requests**
 
 - **Pros:** source of truth เดียวของวิธีที่แอปเข้าถึง backend — เปลี่ยน base URL, timeout หรือ auth scheme ครั้งเดียว; error handling สม่ำเสมอ; และมี provider เดียวให้ override ในเทสต์
-- **Cons:** client กลางอาจสะสม method ที่ไม่เกี่ยวกันจนกลายเป็นถังรวมถ้าไม่มีวินัย (บรรเทาด้วยการเก็บ *typed method* จัดกลุ่มตาม resource หรือแตกเป็น wrapper ต่อ resource บน Dio ตัวเดียวกัน); และทุกอย่างพึ่งมัน การเปลี่ยนจึงกระเพื่อมกว้าง ความสม่ำเสมอคุ้มกับ coupling นั้นในที่นี้
+- **Cons:** client กลางอาจสะสม method ที่ไม่เกี่ยวกันจนกลายเป็นถังรวมถ้าไม่มีวินัย (บรรเทาด้วยการเก็บ *typed method* จัดกลุ่มตาม resource หรือแตกเป็น wrapper ต่อ resource บน Dio ตัวเดียวกัน); และทุกอย่างพึ่ง client ตัวนี้ การเปลี่ยนจึงกระเพื่อมกว้าง ความสม่ำเสมอคุ้มกับ coupling นั้นในที่นี้
 
-## Set it up
+## ติดตั้ง
 
-### 1. Add Dio
+### 1. เพิ่ม Dio
 
 ```bash
 flutter pub add dio
@@ -45,9 +45,9 @@ dependencies:
   dio: ^5.7.0
 ```
 
-### 2. The base URL — extend `lib/src/core/env.dart`
+### 2. base URL — ขยาย `lib/src/core/env.dart`
 
-base URL ของ API ต่างกันตาม platform: Android emulator เข้าถึงเครื่อง host ของคุณที่ `10.0.2.2`, iOS simulator ที่ `localhost` ส่งมันเป็น build-time define แบบเดียวกับค่า Supabase:
+base URL ของ API ต่างกันตาม platform: Android emulator เข้าถึงเครื่อง host ของคุณที่ `10.0.2.2`, iOS simulator ที่ `localhost` ส่งค่าเป็น build-time define แบบเดียวกับค่า Supabase:
 
 ```dart
 // lib/src/core/env.dart (add to the Env class)
@@ -59,7 +59,7 @@ base URL ของ API ต่างกันตาม platform: Android emulator
   );
 ```
 
-### 3. A domain error — `lib/src/core/api/api_exception.dart`
+### 3. domain error — `lib/src/core/api/api_exception.dart`
 
 ```dart
 // lib/src/core/api/api_exception.dart
@@ -78,7 +78,7 @@ class ApiException implements Exception {
 }
 ```
 
-### 4. The client — `lib/src/core/api/fittrack_api.dart`
+### 4. ตัว client — `lib/src/core/api/fittrack_api.dart`
 
 `FitTrackApi` wrap `Dio` ที่ config ไว้ interceptor อ่าน token ผ่าน callback client จึงพึ่ง *"วิธีเอา token ปัจจุบัน"* ไม่ใช่พึ่ง Supabase ตรง ๆ — ซึ่งทำให้ test ง่ายมาก:
 
@@ -157,9 +157,9 @@ class FitTrackApi {
 }
 ```
 
-### 5. The provider — `lib/src/core/api/api_providers.dart`
+### 5. ตัว provider — `lib/src/core/api/api_providers.dart`
 
-ต่อสาย client เข้ากับ config และ session มัน watch `supabaseProvider` แล้วยื่น callback ให้ interceptor ที่อ่าน `currentSession?.accessToken` เมื่อต้องใช้
+ต่อสาย client เข้ากับ config และ session provider ตัวนี้ watch `supabaseProvider` แล้วยื่น callback ให้ interceptor ที่อ่าน `currentSession?.accessToken` เมื่อต้องใช้
 
 ```dart
 // lib/src/core/api/api_providers.dart
@@ -180,7 +180,7 @@ final apiProvider = Provider<FitTrackApi>((ref) {
 });
 ```
 
-## Verify
+## ตรวจสอบผล
 
 ทำให้ backend รันอยู่ (`uv run fastapi dev app/main.py` ใน `api/` จาก [FastAPI modules](/fittrack/th/fastapi/)) และเข้าถึงได้ที่ `API_BASE_URL` ของคุณ analyze ก่อน:
 
@@ -234,11 +234,11 @@ flutter test
 
 ตรวจสอบความเข้าใจ:
 
-- interceptor อ่าน token *ภายใน* `onRequest` แทนที่จะ capture มันครั้งเดียวตอนสร้าง client ทำไมเรื่องนี้สำคัญเมื่อ Supabase refresh JWT อยู่เบื้องหลัง?
+- interceptor อ่าน token *ภายใน* `onRequest` แทนที่จะ capture ไว้ครั้งเดียวตอนสร้าง client ทำไมเรื่องนี้สำคัญเมื่อ Supabase refresh JWT อยู่เบื้องหลัง?
 - `FitTrackApi` รับ callback `TokenReader` แทนที่จะ import Supabase ตรง ๆ การ decouple นั้นให้อะไรกับคุณตอนเขียนเทสต์ให้ client?
-- request fail ด้วย `DioException` ที่พก 404 client เปลี่ยนมันเป็นอะไรก่อนถึง UI และทำไมถึงไม่ปล่อยให้ `DioException` วิ่งต่อ?
+- request fail ด้วย `DioException` ที่พก 404 client เปลี่ยนเป็นอะไรก่อนถึง UI และทำไมถึงไม่ปล่อยให้ `DioException` วิ่งต่อ?
 - ทำไม `apiProvider` ถึงพึ่ง `supabaseProvider` แทนที่จะให้แต่ละหน้าจอสร้าง `FitTrackApi` ของตัวเอง?
 
-## Recap
+## สรุป
 
-ตอนนี้ Flutter app มี gateway แบบ typed ตัวเดียวไปยัง FastAPI: `FitTrackApi` ที่สร้างบน **Dio** และ expose เป็น `apiProvider` ซึ่งเป็นเจ้าของ base URL และ — ผ่าน `onRequest` interceptor ที่อ่าน `accessToken` สดของ Supabase — ประทับ `Authorization: Bearer` บนทุก request เพื่อให้ [backend verify JWT ได้](/fittrack/th/auth/) transport error กลายเป็น domain `ApiException` ที่มี status code และ typed method ครอบ endpoint ตาม contract (`GET /me`, `GET /exercises`, `POST /workouts`, `GET /progress/*`) `GET /me` ตอน sign-in คืน profile กลับมา และ call ตอน sign-out คืน `401` ที่สะอาด พิสูจน์ว่า token วิ่งไปกลับครบ end to end เมื่อ auth, state, routing และ backend client พร้อมครบ โครงสร้างพื้นฐานก็เสร็จ ต่อไป [Flutter — Tracking →](/fittrack/th/flutter-tracking/) สร้างตัว product จริงบน client ตัวนี้: log workout และเรียกดู history กับ progress
+ตอนนี้ Flutter app มี gateway แบบ typed ตัวเดียวไปยัง FastAPI: `FitTrackApi` ที่สร้างบน **Dio** และ expose เป็น `apiProvider` ที่เป็นเจ้าของ base URL และ — ผ่าน `onRequest` interceptor ที่อ่าน `accessToken` สดของ Supabase — ประทับ `Authorization: Bearer` บนทุก request เพื่อให้ [backend verify JWT ได้](/fittrack/th/auth/) transport error กลายเป็น domain `ApiException` ที่มี status code และ typed method ครอบ endpoint ตาม contract (`GET /me`, `GET /exercises`, `POST /workouts`, `GET /progress/*`) `GET /me` ตอน sign-in คืน profile กลับมา และ call ตอน sign-out คืน `401` ที่สะอาด พิสูจน์ว่า token วิ่งไปกลับครบ end to end เมื่อ auth, state, routing และ backend client พร้อมครบ โครงสร้างพื้นฐานก็เสร็จ ต่อไป [Flutter — Tracking →](/fittrack/th/flutter-tracking/) สร้างตัว product จริงบน client ตัวนี้: log workout และเรียกดู history กับ progress

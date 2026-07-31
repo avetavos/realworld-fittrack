@@ -5,38 +5,38 @@ sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-สองชั้นที่ตั้งบน model ของบทที่แล้ว: **`app/schemas/`** — Pydantic v2 model ที่ define ว่าข้อมูลอะไรข้าม boundary ของ API — และ **`app/repositories/`** — async class ที่เป็นเจ้าของทุก database query schema validate และจัดรูปร่าง; repository อ่านและเขียน ระหว่างพวกมัน พวกมันเปลี่ยน raw SQLAlchemy model เป็น read/write surface ที่สะอาดที่ router แค่เรียก
+สองชั้นที่ตั้งบน model ของบทที่แล้ว: **`app/schemas/`** — Pydantic v2 model ที่ define ว่าข้อมูลอะไรข้าม boundary ของ API — และ **`app/repositories/`** — async class ที่เป็นเจ้าของทุก database query schema validate และจัดรูปร่าง; repository อ่านและเขียน สองชั้นนี้รวมกันเปลี่ยน raw SQLAlchemy model เป็น read/write surface ที่สะอาด ให้ router แค่เรียกใช้
 
-คุณจะเขียน `ExerciseCreate` และ `ExerciseRead`, `WorkoutCreate` ที่มี list `SetInput` ซ้อนและ `WorkoutRead` ที่ match กัน แล้ว `ExerciseRepo` และ `WorkoutRepo` — แต่ละตัวรับ `AsyncSession` (จาก [Async database →](/fittrack/th/fastapi/async-database/)) และ expose method อย่าง `create`, `get`, และ `list` นี่คือชิ้นสุดท้ายของ domain layer: เมื่อมันเสร็จ [The Exercises API →](/fittrack/th/exercises/) ส่วนใหญ่คือการต่อสาย route เข้ากับการเรียก repository
+คุณจะเขียน `ExerciseCreate` และ `ExerciseRead`, `WorkoutCreate` ที่มี list `SetInput` ซ้อนและ `WorkoutRead` ที่ match กัน แล้ว `ExerciseRepo` และ `WorkoutRepo` — แต่ละตัวรับ `AsyncSession` (จาก [Async database →](/fittrack/th/fastapi/async-database/)) และ expose method อย่าง `create`, `get`, และ `list` นี่คือชิ้นสุดท้ายของ domain layer: เมื่อชั้นนี้เสร็จ [The Exercises API →](/fittrack/th/exercises/) ส่วนใหญ่คือการต่อสาย route เข้ากับการเรียก repository
 
-## Why
+## ทำไม
 
-SQLAlchemy model คือรูปร่างของ *database* มันเป็นสิ่งผิดที่จะรับจาก client และผิดที่จะยื่นกลับ การรับ raw model เป็น input จะให้ผู้เรียกตั้ง `id`, `created_at`, หรือ `created_by` — field ที่ server เป็นเจ้าของ การ return มัน leak internal structure และกับดัก lazy-load ดังนั้น FitTrack แยกความกังวลนี้: **Pydantic schema คือ boundary** และมันมาเป็นคู่
+SQLAlchemy model คือรูปร่างของ *database* จึงไม่ควรรับตรง ๆ จาก client และไม่ควรยื่นกลับไปตรง ๆ การรับ raw model เป็น input จะเปิดให้ผู้เรียกตั้ง `id`, `created_at`, หรือ `created_by` — field ที่ server เป็นเจ้าของ ส่วนการ return model ตรง ๆ ก็ leak internal structure และกับดัก lazy-load ดังนั้น FitTrack แยก concern ตรงนี้ออก: **Pydantic schema คือ boundary** และมาเป็นคู่เสมอ
 
-- **`ExerciseCreate`** คือสิ่งที่ client *ส่ง* ได้ — `name`, `muscle_group`, `is_public` — และไม่มีอย่างอื่น มัน validate: `name` ต้องไม่ว่าง, ความยาวถูกจำกัด มันไม่มี `id`, ไม่มี `created_by`; server ตั้งพวกนั้น
-- **`ExerciseRead`** คือสิ่งที่ API *return* — row เต็มรวม field ที่ server เป็นเจ้าของ — พร้อม `model_config = ConfigDict(from_attributes=True)` ดังนั้นมันสร้างจาก SQLAlchemy object ตรง ๆ ได้
+- **`ExerciseCreate`** คือสิ่งที่ client *ส่ง* ได้ — `name`, `muscle_group`, `is_public` — และไม่มีอย่างอื่น ตัว schema validate ให้: `name` ต้องไม่ว่าง และจำกัดความยาว ไม่มี `id` ไม่มี `created_by` เพราะ server เป็นคนตั้งค่าพวกนั้น
+- **`ExerciseRead`** คือสิ่งที่ API *return* — row เต็มรวม field ที่ server เป็นเจ้าของ — พร้อม `model_config = ConfigDict(from_attributes=True)` จึงสร้างจาก SQLAlchemy object ตรง ๆ ได้
 
-`WorkoutCreate` แสดงว่าทำไม nesting ถึงสำคัญ workout ถูก log เป็น **payload เดียวพร้อม set อยู่ข้างใน** — `{"notes": ..., "sets": [{...}, {...}]}` — เพราะ session และ set ของมันถูกสร้างด้วยกันในหนึ่ง transaction ดังนั้น `WorkoutCreate` ถือ `list[SetInput]` และ Pydantic validate ทั้ง tree ในทีเดียว: อย่างน้อยหนึ่ง set แต่ละตัวมี `reps` ที่เป็นบวกและ `weight_kg` ที่ fit `numeric(6,2)` สังเกตว่า `SetInput` **ไม่มี `set_index`** — client ส่ง set *ตามลำดับ* และ server assign index ตามตำแหน่ง ลำดับเป็น truth ที่ server เป็นเจ้าของ ไม่ใช่สิ่งที่ควร trust ให้ client เป็นคนนับ
+`WorkoutCreate` แสดงว่าทำไม nesting ถึงสำคัญ workout ถูก log เป็น **payload เดียวพร้อม set อยู่ข้างใน** — `{"notes": ..., "sets": [{...}, {...}]}` — เพราะ session และ set ของ session นั้นสร้างขึ้นด้วยกันในหนึ่ง transaction ดังนั้น `WorkoutCreate` ถือ `list[SetInput]` และ Pydantic validate ทั้ง tree ในทีเดียว: อย่างน้อยหนึ่ง set แต่ละตัวมี `reps` ที่เป็นบวกและ `weight_kg` ที่ fit `numeric(6,2)` สังเกตว่า `SetInput` **ไม่มี `set_index`** — client ส่ง set *ตามลำดับ* และ server assign index ตามตำแหน่ง ลำดับเป็น truth ที่ server เป็นเจ้าของ ไม่ใช่สิ่งที่ควร trust ให้ client เป็นคนนับ
 
-**Repository** ตอบคำถามคนละอัน: query อยู่ที่ไหน? ไม่ใช่ใน router — router ควรอ่านเหมือน "validate input, ทำสิ่งนั้น, return output," ไม่ใช่แบก noise ของ `select(...).where(...)` repository เป็น class เล็ก ๆ ที่ถือ `AsyncSession` เดียวและทุก query สำหรับ resource หนึ่ง `ExerciseRepo.list_visible(user_id)` encapsulate "exercise สาธารณะบวกของ user คนนี้เอง"; `WorkoutRepo.get(id, user_id)` encapsulate "workout นี้ แต่เฉพาะถ้ามันเป็นของคุณ พร้อม set ที่ load แล้ว" router เรียก method; SQL มีบ้านเดียวเป๊ะ; test exercise repo ได้โดยไม่ต้องยก HTTP ขึ้นมา
+**Repository** ตอบคำถามคนละอัน: query อยู่ที่ไหน? ไม่ใช่ใน router — router ควรอ่านเหมือน "validate input, ทำสิ่งนั้น, return output," ไม่ใช่แบก noise ของ `select(...).where(...)` repository เป็น class เล็ก ๆ ที่ถือ `AsyncSession` เดียวและทุก query สำหรับ resource หนึ่ง `ExerciseRepo.list_visible(user_id)` encapsulate "exercise สาธารณะบวกของ user คนนี้เอง"; `WorkoutRepo.get(id, user_id)` encapsulate "workout นี้ แต่เฉพาะถ้าเป็นของคุณ พร้อม set ที่ load แล้ว" router เรียก method; SQL มีบ้านเดียวเป๊ะ; test exercise repo ได้โดยไม่ต้องยก HTTP ขึ้นมา
 
-กฎที่เก็บให้ write ทนทาน: **write method แต่ละตัว commit unit of work ของตัวเอง** `get_session` ของ [Async database →](/fittrack/th/fastapi/async-database/) ตั้งใจ *ไม่* commit — มันแค่ yield session สะอาดแล้วปิดมัน — ดังนั้น method ที่เขียนต้องเรียก `commit()` เอง และ read method ไม่เคย สิ่งที่ทำให้ "สร้าง workout *และ* set ของมัน" atomic ไม่ใช่ shared request-level transaction; มันคือการที่ทั้ง object graph ถูก add และ commit ใน **`commit()` เดียว** ภายใน `create`: SQLAlchemy flush parent และ cascaded children ด้วยกัน และ commit เดียวนั้นทำให้ทั้งหมดทนทานหรือไม่มีเลย การ commit ต่อ set หรือใน 2 ขั้น คือสิ่งที่จะให้ session ที่ log ไปครึ่งเดียวมีอยู่ได้
+กฎที่เก็บให้ write ทนทาน: **write method แต่ละตัว commit unit of work ของตัวเอง** `get_session` ของ [Async database →](/fittrack/th/fastapi/async-database/) ตั้งใจ *ไม่* commit — แค่ yield session สะอาดแล้วปิดให้ — ดังนั้น method ที่เขียนต้องเรียก `commit()` เอง ส่วน read method ไม่ต้องเลย สิ่งที่ทำให้ "สร้าง workout *และ* set ทั้งชุด" atomic ไม่ใช่ shared request-level transaction แต่คือการ add ทั้ง object graph แล้ว commit ใน **`commit()` เดียว** ภายใน `create`: SQLAlchemy flush parent และ cascaded children ด้วยกัน และ commit เดียวนั้นทำให้ทั้งหมดทนทานหรือไม่มีเลย การ commit ต่อ set หรือใน 2 ขั้น คือสิ่งที่จะให้ session ที่ log ไปครึ่งเดียวมีอยู่ได้
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **แยก input และ output schema (`Create` เทียบกับ `Read`)** เทียบกับ **schema เดียวสำหรับทั้งสองทิศทาง**
 
 - **Pros:** input schema expose *เฉพาะ* field ที่ client ตั้งได้ ดังนั้นค่าที่ server เป็นเจ้าของ (`id`, `created_by`, timestamp) spoof ไม่ได้และไม่ต้อง strip; กฎ validation อยู่เป๊ะที่ที่ข้อมูลที่ไม่ trust เข้ามา; output schema รวมทุกอย่างที่ client ควรเห็นได้อย่างปลอดภัย รูปร่างทั้งสอง evolve อิสระกัน
-- **Cons:** class เยอะขึ้นสำหรับสิ่งที่ดูเหมือน entity เดียวกัน และมีการซ้ำเล็กน้อยระหว่าง `Create` และ `Read` การซ้ำนั้นคือประเด็น — รูปร่างต่างกันจริง — แต่มันเป็นการพิมพ์จริง และคุณต้านความอยากที่จะ "DRY" มันเป็น model เดียวที่ permissive ซึ่ง reintroduce ความเสี่ยงของการ spoof
+- **Cons:** class เยอะขึ้นสำหรับสิ่งที่ดูเหมือน entity เดียวกัน และมีการซ้ำเล็กน้อยระหว่าง `Create` และ `Read` การซ้ำนั้นคือประเด็น — รูปร่างต่างกันจริง — แต่ก็ต้องพิมพ์เพิ่มจริง ๆ และคุณต้องต้านความอยากที่จะ "DRY" ให้เหลือ model เดียวที่ permissive เพราะนั่นดึงความเสี่ยงเรื่อง spoof กลับมา
 
 **Repository class** เทียบกับ **query เขียน inline ใน route handler**
 
 - **Pros:** ทุก SQL สำหรับ resource อยู่ที่ testable เดียว; router ยังบางและอ่านเป็น intent ไม่ใช่ query mechanics; query ที่ใช้โดยสอง endpoint (get-by-id ทั้งใน "read" และ "update") เขียนครั้งเดียว; การเปลี่ยนวิธี load บางอย่างแตะไฟล์เดียว
-- **Cons:** มันเป็นอีกชั้นให้ route ผ่าน และสำหรับ endpoint query เดียวที่ trivial จริง ๆ repository รู้สึกเหมือนพิธีการ FitTrack ยอมรับนั่น: consistency (ทุก resource มี repo) มีค่ามากกว่าการโกน class ออกจาก route ที่ง่ายสุด และ workout query ไม่ trivial เลยสักนิด
+- **Cons:** นี่คืออีกชั้นที่ route ต้องผ่าน และสำหรับ endpoint query เดียวที่ trivial จริง ๆ repository รู้สึกเหมือนพิธีการ FitTrack ยอมรับนั่น: consistency (ทุก resource มี repo) มีค่ามากกว่าการโกน class ออกจาก route ที่ง่ายสุด และ workout query ไม่ trivial เลยสักนิด
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `app/schemas/exercise.py`
 
@@ -223,11 +223,11 @@ class WorkoutRepo:
         return list(result.scalars().all())
 ```
 
-มีสองอย่างที่ต้องสังเกต query filter บน `user_id` (`get` และ `list_for_user`) ดังนั้น repository return ได้แค่ workout ของผู้เรียกเองเท่านั้น — กฎ ownership จาก `/me` โผล่ที่นี่อีกครั้งในรูป `where` clause และทุกการอ่านที่แตะ `workout.sets` ใช้ **`selectinload`**: ใน async SQLAlchemy ไม่มี lazy loading ดังนั้น collection ที่คุณตั้งใจจะ serialize ต้องถูก eager-load ไม่งั้นการเข้าถึงมันทีหลัง raise `selectinload` fetch set ใน query ที่สองที่วางแผนไว้
+มีสองอย่างที่ต้องสังเกต query filter บน `user_id` (`get` และ `list_for_user`) ดังนั้น repository return ได้แค่ workout ของผู้เรียกเองเท่านั้น — กฎ ownership จาก `/me` โผล่ที่นี่อีกครั้งในรูป `where` clause และทุกการอ่านที่แตะ `workout.sets` ใช้ **`selectinload`**: ใน async SQLAlchemy ไม่มี lazy loading ดังนั้น collection ที่คุณตั้งใจจะ serialize ต้อง eager-load ไว้ก่อน ไม่งั้นเข้าถึงทีหลังจะ raise `selectinload` fetch set ใน query ที่สองที่วางแผนไว้
 
-## Verify
+## ตรวจสอบผล
 
-repository ต้องการ database และ router เพื่อ exercise ครบ — นั่นคือ module ถัดไป สิ่งที่คุณ *check* ได้ standalone คือ schema layer ซึ่งเป็น validation ล้วน: มันควรยอมรับ workout ที่ well-formed และ **ปฏิเสธ** ตัวที่ malformed รัน round-trip ผ่าน `uv`:
+repository ต้องการ database และ router เพื่อ exercise ครบ — นั่นคือ module ถัดไป สิ่งที่คุณ *check* ได้ standalone คือ schema layer ที่เป็น validation ล้วน: ต้องยอมรับ workout ที่ well-formed และ **ปฏิเสธ** ตัวที่ malformed รัน round-trip ผ่าน `uv`:
 
 ```bash
 uv run python -c "
@@ -269,7 +269,7 @@ rejected: List should have at least 1 item after validation, not 0
 rejected: Input should be greater than 0
 ```
 
-สองการปฏิเสธ ไม่มี crash — schema บังคับ contract ก่อนสิ่งใดในนี้ถึง database เป็น import check สุดท้ายว่า repository ต่อสายเข้า model ถูกต้อง ยืนยันว่ามัน load:
+สองการปฏิเสธ ไม่มี crash — schema บังคับ contract ก่อนสิ่งใดในนี้ถึง database เหลือ import check สุดท้ายว่า repository ต่อสายเข้า model ถูกต้อง ยืนยันว่า module load ได้:
 
 ```bash
 uv run python -c "import app.repositories.exercise, app.repositories.workout; print('repos import cleanly')"
@@ -281,11 +281,11 @@ repos import cleanly
 
 ตรวจสอบความเข้าใจ:
 
-- `ExerciseCreate` ละ `id`, `created_by`, และ `created_at` ขณะที่ `ExerciseRead` รวมพวกมัน อะไรจะพังถ้าคุณรับ schema permissive เดียวสำหรับทั้งสองทิศทาง?
-- `SetInput` ไม่มี `set_index` แต่ set ที่ store แล้วถูกนับ index มาจากไหน และทำไม client ไม่ควรให้มัน?
-- `WorkoutRepo.create` add workout และ set ทั้งหมดของมัน แล้วเรียก `session.commit()` เดียว ทำไม commit เดียวแทนที่จะ commit แต่ละ set ตอน add — และ workout ที่ log ไปครึ่งเดียวจะหน้าตายังไงถ้ามัน commit ต่อ set?
-- ทุกการอ่านที่ return `workout.sets` ใช้ `selectinload` อะไรพังถ้าคุณละมันไว้ใต้ async session และทำไม?
+- `ExerciseCreate` ละ `id`, `created_by`, และ `created_at` ส่วน `ExerciseRead` รวม field พวกนั้นไว้ อะไรจะพังถ้าคุณรับ schema permissive เดียวสำหรับทั้งสองทิศทาง?
+- `SetInput` ไม่มี `set_index` แต่ set ที่ store แล้วมี index ค่านั้นมาจากไหน และทำไม client ไม่ควรเป็นคนส่งมา?
+- `WorkoutRepo.create` add workout พร้อม set ทั้งหมด แล้วเรียก `session.commit()` เดียว ทำไมต้อง commit เดียวแทนที่จะ commit แต่ละ set ตอน add — และ workout ที่ log ไปครึ่งเดียวจะหน้าตายังไงถ้า commit ทีละ set?
+- ทุกการอ่านที่ return `workout.sets` ใช้ `selectinload` อะไรพังถ้าคุณละ `selectinload` ไว้ใต้ async session และทำไม?
 
-## Recap
+## สรุป
 
-domain layer เสร็จแล้ว **Pydantic v2 schema** (`ExerciseCreate`/`ExerciseRead`, `WorkoutCreate` ที่มี list `SetInput` ซ้อน, `WorkoutRead`) คือ boundary ที่ validate แล้ว — input schema expose เฉพาะ field ที่ client ตั้งได้, output schema สร้างจาก model ตรง ๆ ผ่าน `from_attributes`, และทั้ง workout-with-sets validate ในทีเดียว **Async repository** (`ExerciseRepo`, `WorkoutRepo`) รับ `AsyncSession` และเก็บทุก query ไว้ที่เดียว: ownership filter เก็บการอ่าน scope ไว้ที่ผู้เรียก, `selectinload` eager-load collection สำหรับ async, และ write method `commit` unit of work ของตัวเอง — ทั้ง workout-with-sets ใน `commit` เดียว — ขณะที่ `get_session` แค่แจก session แล้วปิดมัน เรา verify ว่า schema ยอมรับ input ที่ดีและปฏิเสธ set list ที่ว่างและ reps ที่ไม่เป็นบวก นั่นคือทุกอย่างที่ API ต้องการ: model ไว้ store, schema ไว้ validate, repository ไว้ query ต่อไป [The Exercises API →](/fittrack/th/exercises/) เปลี่ยนชิ้นส่วนพวกนี้เป็น endpoint จริง — router บาง ๆ ที่ authenticate ด้วย `get_current_user`, รับ `AsyncSession`, และเรียกตรงเข้า `ExerciseRepo`
+domain layer เสร็จแล้ว **Pydantic v2 schema** (`ExerciseCreate`/`ExerciseRead`, `WorkoutCreate` ที่มี list `SetInput` ซ้อน, `WorkoutRead`) คือ boundary ที่ validate แล้ว — input schema expose เฉพาะ field ที่ client ตั้งได้, output schema สร้างจาก model ตรง ๆ ผ่าน `from_attributes`, และทั้ง workout-with-sets validate ในทีเดียว **Async repository** (`ExerciseRepo`, `WorkoutRepo`) รับ `AsyncSession` และเก็บทุก query ไว้ที่เดียว: ownership filter เก็บการอ่าน scope ไว้ที่ผู้เรียก, `selectinload` eager-load collection สำหรับ async, และ write method `commit` unit of work ของตัวเอง — ทั้ง workout-with-sets ใน `commit` เดียว — ส่วน `get_session` แค่แจก session แล้วปิดให้ เรา verify ว่า schema ยอมรับ input ที่ดีและปฏิเสธ set list ที่ว่างและ reps ที่ไม่เป็นบวก นั่นคือทุกอย่างที่ API ต้องการ: model ไว้ store, schema ไว้ validate, repository ไว้ query ต่อไป [The Exercises API →](/fittrack/th/exercises/) เปลี่ยนชิ้นส่วนพวกนี้เป็น endpoint จริง — router บาง ๆ ที่ authenticate ด้วย `get_current_user`, รับ `AsyncSession`, และเรียกตรงเข้า `ExerciseRepo`

@@ -5,37 +5,37 @@ sidebar:
   order: 1
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-`mobile/` — Flutter app และเป็น **client หลักแบบ mobile-first** ของ FitTrack บทนี้ยังไม่ทำอะไรที่เจาะจง FitTrack เกี่ยวกับข้อมูลเลย มันแค่ตั้งโครง Flutter project ที่ client อีกสอง module จะต่อยอด คุณรัน `flutter create` ในไดเรกทอรี `mobile/` ที่ [repo layout →](/fittrack/th/setup/repo-layout/) กันไว้ให้ เพิ่ม **`flutter_riverpod`** สำหรับจัดการ state และ **`go_router`** สำหรับ navigation ครอบทั้งแอปด้วย **`ProviderScope`** จัด `lib/` เป็น feature folder แทนที่จะยัดทุกอย่างในไฟล์เดียว แล้วนิยาม router ที่บทถัด ๆ ไปเอาหน้า sign-in กับ tracking มาแขวน
+`mobile/` — Flutter app และเป็น **client หลักแบบ mobile-first** ของ FitTrack บทนี้ยังไม่ทำอะไรที่เจาะจง FitTrack เกี่ยวกับข้อมูลเลย แค่ตั้งโครง Flutter project ที่ client อีกสอง module จะต่อยอด คุณรัน `flutter create` ในไดเรกทอรี `mobile/` ที่ [repo layout →](/fittrack/th/setup/repo-layout/) กันไว้ให้ เพิ่ม **`flutter_riverpod`** สำหรับจัดการ state และ **`go_router`** สำหรับ navigation ครอบทั้งแอปด้วย **`ProviderScope`** จัด `lib/` เป็น feature folder แทนที่จะยัดทุกอย่างในไฟล์เดียว แล้วนิยาม router ที่บทถัด ๆ ไปเอาหน้า sign-in กับ tracking มาแขวน
 
 พอจบบท คุณจะได้ Flutter app ที่ analyze ผ่านสะอาด ผ่าน widget test ตัวแรก และรันลงที่ home route แบบ placeholder ได้ — พร้อมโครงสร้างพื้นฐาน (provider container ที่ root, router provider, layout แบบ feature-first) ที่บท Supabase auth และ API client เสียบเข้ามาใช้ได้ทันที
 
-## Why
+## ทำไม
 
 การตัดสินใจสองเรื่องกำหนดว่าทุกหน้าจอหลังจากนี้จะเขียนยังไง: **state ไหลยังไง** กับ **navigation ทำงานยังไง**
 
-**State — Riverpod.** แอป workout tracker เต็มไปด้วย state ที่ share กันและเป็น async: auth session ปัจจุบัน, exercise catalog, workout ที่กำลัง log อยู่, ค่า progress stats ที่ดึงจาก API `setState` ที่ Flutter มีมาให้ขัง state ไว้ใน widget เดียว ส่งต่อผ่าน constructor ลงไปเรื่อย ๆ ก็เริ่มเทอะทะเร็ว และ `InheritedWidget` ก็ยาวเยิ่นเวลาเขียนเอง **Riverpod** ให้ *provider* กับคุณ — หน่วยของ state และ logic ที่ประกาศแบบ declarative, test ได้ และ widget ไหนก็อ่านได้ด้วย `ref.watch(...)` แล้ว rebuild เฉพาะ widget ที่พึ่งมันจริง ๆ จุดสำคัญคือ provider ไม่ผูกกับ `BuildContext` ดังนั้น API client และ auth logic อยู่เป็น provider ธรรมดาที่ unit-test ได้โดยไม่ต้อง pump widget provider ยัง *compose* กันได้ด้วย: API-client provider จะอ่าน auth provider เพื่อเอา token ปัจจุบัน แล้ว Riverpod ต่อสาย dependency นั้นให้คุณเอง
+**State — Riverpod.** แอป workout tracker เต็มไปด้วย state ที่ share กันและเป็น async: auth session ปัจจุบัน, exercise catalog, workout ที่กำลัง log อยู่, ค่า progress stats ที่ดึงจาก API `setState` ที่ Flutter มีมาให้ขัง state ไว้ใน widget เดียว ส่งต่อผ่าน constructor ลงไปเรื่อย ๆ ก็เริ่มเทอะทะเร็ว และ `InheritedWidget` ก็ยาวเยิ่นเวลาเขียนเอง **Riverpod** ให้ *provider* กับคุณ — หน่วยของ state และ logic ที่ประกาศแบบ declarative, test ได้ และ widget ไหนก็อ่านได้ด้วย `ref.watch(...)` แล้ว rebuild เฉพาะ widget ที่พึ่ง state นั้นจริง ๆ จุดสำคัญคือ provider ไม่ผูกกับ `BuildContext` ดังนั้น API client และ auth logic อยู่เป็น provider ธรรมดาที่ unit-test ได้โดยไม่ต้อง pump widget provider ยัง *compose* กันได้ด้วย: API-client provider จะอ่าน auth provider เพื่อเอา token ปัจจุบัน แล้ว Riverpod ต่อสาย dependency นั้นให้คุณเอง
 
-**Navigation — go_router.** FitTrack มีความต้องการด้าน navigation จริง: auth gate (คนที่ยังไม่ sign-in เห็นหน้า sign-in, คนที่ sign-in แล้วเห็นตัวแอป), named route สำหรับ push หน้า log workout และในอนาคตคือ deep link `Navigator.push` แบบ imperative ของ Flutter กระจายการตัดสินใจเรื่อง route ไปทั่ว codebase และทำให้ "redirect ไป sign-in เมื่อ session เป็น null" ทำได้อย่างงุ่มง่าม **go_router** เป็น declarative: คุณอธิบาย route table ครั้งเดียว แล้ว `redirect` callback ตัวเดียว (เพิ่มในบทถัดไป) gate ทั้งแอปบน auth state ได้ มันยังเข้ากับ Riverpod ได้อย่างเป็นธรรมชาติ — ตัว router เองเป็น provider ที่ watch session ได้
+**Navigation — go_router.** FitTrack มีความต้องการด้าน navigation จริง: auth gate (คนที่ยังไม่ sign-in เห็นหน้า sign-in, คนที่ sign-in แล้วเห็นตัวแอป), named route สำหรับ push หน้า log workout และในอนาคตคือ deep link `Navigator.push` แบบ imperative ของ Flutter กระจายการตัดสินใจเรื่อง route ไปทั่ว codebase และทำให้ "redirect ไป sign-in เมื่อ session เป็น null" ทำได้อย่างงุ่มง่าม **go_router** เป็น declarative: คุณอธิบาย route table ครั้งเดียว แล้ว `redirect` callback ตัวเดียว (เพิ่มในบทถัดไป) gate ทั้งแอปบน auth state ได้ และยังเข้ากับ Riverpod ได้อย่างเป็นธรรมชาติ — ตัว router เองเป็น provider ที่ watch session ได้
 
-**Structure — feature-first.** `lib/main.dart` อยู่ตัวเล็ก ๆ: มันติดตั้ง `ProviderScope` แล้วส่งต่อให้ `MaterialApp.router` ที่เหลือทั้งหมดอยู่ใต้ `lib/src/` จัดกลุ่มตาม *feature* (`features/auth/`, `features/workouts/`) พร้อมโฟลเดอร์ `core/` สำหรับชิ้นส่วนที่ใช้ข้ามกัน (router, API client, config) layout แบบ feature-first หมายความว่า UI, state และ model ของ feature เดียวอยู่ด้วยกัน และแอปขยายได้โดยไม่มี `main.dart` ยาว 2000 บรรทัด
+**Structure — feature-first.** `lib/main.dart` เล็กมาก: แค่ติดตั้ง `ProviderScope` แล้วส่งต่อให้ `MaterialApp.router` ที่เหลือทั้งหมดอยู่ใต้ `lib/src/` จัดกลุ่มตาม *feature* (`features/auth/`, `features/workouts/`) พร้อมโฟลเดอร์ `core/` สำหรับชิ้นส่วนที่ใช้ข้ามกัน (router, API client, config) layout แบบ feature-first หมายความว่า UI, state และ model ของ feature เดียวอยู่ด้วยกัน และแอปขยายได้โดยไม่มี `main.dart` ยาว 2000 บรรทัด
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Riverpod** vs. **plain `setState` / `InheritedWidget` (or the older `provider` package)**
 
-- **Pros:** state อยู่นอก widget tree จึง share ได้โดยไม่ต้อง prop-drilling และ unit-test ได้โดยไม่ต้องมี widget; provider rebuild เฉพาะตัวที่พึ่งมัน (update แบบ fine-grained, performant); ปลอดภัยตอน compile — provider ที่หายไปเป็น build error ไม่ใช่ `null` ตอน runtime; และ provider compose กันได้ API client จึงพึ่ง auth session แบบ declarative ได้
-- **Cons:** มันเป็น mental model ใหม่ (provider, `ref`, `WidgetRef`) ที่มีต้นทุนการเรียนรู้ล่วงหน้าจริง; แอปเล็ก ๆ ที่ไม่เคย share state เลยจะเบากว่าถ้าใช้ `setState`; และ ecosystem มีหลายรสชาติ (`Notifier`, `AsyncNotifier`, code-gen แบบ optional) ที่คุณต้องเลือก สำหรับแอปที่มี auth, catalog และ API state ข้ามหน้าจอ โครงสร้างนั้นคุ้มทันที
+- **Pros:** state อยู่นอก widget tree จึง share ได้โดยไม่ต้อง prop-drilling และ unit-test ได้โดยไม่ต้องมี widget; provider rebuild เฉพาะตัวที่พึ่งค่านั้น (update แบบ fine-grained, performant); ปลอดภัยตอน compile — provider ที่หายไปเป็น build error ไม่ใช่ `null` ตอน runtime; และ provider compose กันได้ API client จึงพึ่ง auth session แบบ declarative ได้
+- **Cons:** นี่คือ mental model ใหม่ (provider, `ref`, `WidgetRef`) ที่มีต้นทุนการเรียนรู้ล่วงหน้าจริง; แอปเล็ก ๆ ที่ไม่เคย share state เลยจะเบากว่าถ้าใช้ `setState`; และ ecosystem มีหลายรสชาติ (`Notifier`, `AsyncNotifier`, code-gen แบบ optional) ที่คุณต้องเลือก สำหรับแอปที่มี auth, catalog และ API state ข้ามหน้าจอ โครงสร้างนั้นคุ้มทันที
 
 **go_router (declarative routing)** vs. **imperative `Navigator.push` / `Navigator.pop`**
 
-- **Pros:** route table กลางตัวเดียวแทน route logic ที่โปรยไปทั่ว widget; `redirect` callback ตัวเดียวเขียน auth gate ทั้งหมดได้; รองรับ deep-link และ URL แบบ first-class (ที่ Svelte companion ได้ฟรีแต่ mobile ต้องเลือกใช้เอง); และมัน integrate กับ Riverpod ได้ router จึงตอบสนองการเปลี่ยน session ได้
-- **Cons:** พิธีรีตองมากกว่าสำหรับแค่หน้าจอสองหน้า ที่ `Navigator.push` เปล่า ๆ ก็พอ; โมเดล redirect/refresh มี edge case ที่ควรเข้าใจก่อนพึ่งมัน; และมันเป็น dependency ที่ต้องคอยอัปเดต สำหรับแอปที่ต้อง gate บน auth และจะโตขึ้นอีกหลายหน้าจอ route table แบบ declarative ชนะ
+- **Pros:** route table กลางตัวเดียวแทน route logic ที่โปรยไปทั่ว widget; `redirect` callback ตัวเดียวเขียน auth gate ทั้งหมดได้; รองรับ deep-link และ URL แบบ first-class (ที่ Svelte companion ได้ฟรีแต่ mobile ต้องเลือกใช้เอง); และ integrate กับ Riverpod ได้ router จึงตอบสนองการเปลี่ยน session ได้
+- **Cons:** พิธีรีตองมากกว่าสำหรับแค่หน้าจอสองหน้า ที่ `Navigator.push` เปล่า ๆ ก็พอ; โมเดล redirect/refresh มี edge case ที่ควรเข้าใจก่อนใช้จริง; และเป็น dependency ที่ต้องคอยอัปเดต สำหรับแอปที่ต้อง gate บน auth และจะโตขึ้นอีกหลายหน้าจอ route table แบบ declarative ชนะ
 
-## Set it up
+## ติดตั้ง
 
-### 1. `flutter create` the app
+### 1. `flutter create` ตัวแอป
 
 จาก repo root (โฟลเดอร์ `fittrack/` ที่มี `api/`) สร้างแอป **เข้าไปใน** ไดเรกทอรี `mobile/` ที่มีอยู่แล้ว:
 
@@ -50,13 +50,13 @@ cd mobile
 flutter doctor
 ```
 
-### 2. Add the dependencies
+### 2. เพิ่ม dependency
 
 ```bash
 flutter pub add flutter_riverpod go_router
 ```
 
-คำสั่งนี้เขียนมันลงใน `pubspec.yaml` บรรทัดที่เกี่ยวข้อง:
+คำสั่งนี้เขียนลงใน `pubspec.yaml` บรรทัดที่เกี่ยวข้อง:
 
 ```yaml
 # pubspec.yaml
@@ -67,7 +67,7 @@ dependencies:
   go_router: ^14.6.2        # declarative routing
 ```
 
-### 3. Lay out `lib/src/`
+### 3. วางโครง `lib/src/`
 
 แทนที่ demo counter ของ Flutter ด้วยโครงสร้างแบบ feature-first สร้างโฟลเดอร์และไฟล์เหล่านี้:
 
@@ -87,9 +87,9 @@ mobile/lib/
 mkdir -p lib/src/core lib/src/features/auth lib/src/features/workouts
 ```
 
-### 4. A first screen — `lib/src/features/workouts/home_screen.dart`
+### 4. หน้าจอแรก — `lib/src/features/workouts/home_screen.dart`
 
-หน้า placeholder ที่ router จะลงมาได้ มันเป็น `ConsumerWidget` (widget base ของ Riverpod) ตั้งแต่แรก การเสียบ provider เข้ามาภายหลังจึงเป็นแค่การแก้บรรทัดเดียว:
+หน้า placeholder ที่ router จะลงมาได้ ประกาศเป็น `ConsumerWidget` (widget base ของ Riverpod) ตั้งแต่แรก การเสียบ provider เข้ามาภายหลังจึงเป็นแค่การแก้บรรทัดเดียว:
 
 ```dart
 // lib/src/features/workouts/home_screen.dart
@@ -112,7 +112,7 @@ class HomeScreen extends ConsumerWidget {
 }
 ```
 
-### 5. The router — `lib/src/router.dart`
+### 5. ตัว router — `lib/src/router.dart`
 
 expose `GoRouter` เป็น Riverpod **provider** เรื่องนี้สำคัญ: ในบทถัดไป provider ตัวเดียวกันนี้จะ `ref.watch` auth session แล้วเพิ่ม `redirect` โดยไม่ต้องแตะ `main.dart`
 
@@ -139,7 +139,7 @@ final routerProvider = Provider<GoRouter>((ref) {
 });
 ```
 
-### 6. Wire it up — `lib/main.dart`
+### 6. ต่อสายให้ครบ — `lib/main.dart`
 
 `main.dart` ทำสองอย่างแล้วหยุด: ติดตั้ง `ProviderScope` (root container ของ Riverpod ที่ถือ state ของทุก provider) และขับ `MaterialApp.router` จาก router provider
 
@@ -171,9 +171,9 @@ class FitTrackApp extends ConsumerWidget {
 }
 ```
 
-## Verify
+## ตรวจสอบผล
 
-ดึง package แล้วรัน static analyzer — ทั้ง Riverpod และ go_router พึ่งมันในการจับ error แต่เนิ่น ๆ:
+ดึง package แล้วรัน static analyzer — ทั้ง Riverpod และ go_router พึ่ง analyzer ในการจับ error แต่เนิ่น ๆ:
 
 ```bash
 flutter pub get
@@ -185,7 +185,7 @@ Analyzing mobile...
 No issues found!
 ```
 
-แทนที่ `test/widget_test.dart` เดิม (มันอ้าง counter demo ที่ถูกลบไปแล้ว) ด้วยตัวที่ pump แอปภายใน `ProviderScope` แล้ว assert ว่า home screen render ออกมา:
+แทนที่ `test/widget_test.dart` เดิม (ไฟล์เดิมอ้าง counter demo ที่ลบไปแล้ว) ด้วยตัวที่ pump แอปภายใน `ProviderScope` แล้ว assert ว่า home screen render ออกมา:
 
 ```dart
 // test/widget_test.dart
@@ -213,7 +213,7 @@ flutter test
 00:02 +1: All tests passed!
 ```
 
-สุดท้าย รันบน device หรือ simulator แล้วยืนยันว่ามันลงที่ home route:
+สุดท้าย รันบน device หรือ simulator แล้วยืนยันว่าแอปลงที่ home route:
 
 ```bash
 flutter run
@@ -223,11 +223,11 @@ flutter run
 
 ตรวจสอบความเข้าใจ:
 
-- ทำไมถึง expose `GoRouter` เป็น Riverpod *provider* แทนที่จะสร้างมันแบบ inline ใน `MaterialApp.router` การทำแบบนั้นเปิดทางให้บทถัดไปทำอะไรได้โดยไม่ต้องแก้ `main.dart`?
-- `ProviderScope` ครอบทั้งแอปทั้งใน `main()` และใน widget test อะไรจะพังถ้า widget พยายาม `ref.watch` provider ที่ไม่มี `ProviderScope` อยู่เหนือมัน?
+- ทำไมถึง expose `GoRouter` เป็น Riverpod *provider* แทนที่จะสร้างแบบ inline ใน `MaterialApp.router` การทำแบบนั้นเปิดทางให้บทถัดไปทำอะไรได้โดยไม่ต้องแก้ `main.dart`?
+- `ProviderScope` ครอบทั้งแอปทั้งใน `main()` และใน widget test อะไรจะพังถ้า widget พยายาม `ref.watch` provider ที่ไม่มี `ProviderScope` อยู่เหนือขึ้นไป?
 - ยกตัวอย่าง state สองแบบใน FitTrack ที่ share ข้ามหน้าจอและจะจัดการได้ยากถ้าใช้ `setState` อย่างเดียว
 - home screen เป็น `ConsumerWidget` ทั้งที่ยังไม่ได้อ่าน provider เลย ทำไมถึงเริ่มแบบนั้นแทนที่จะเป็น `StatelessWidget` ธรรมดา?
 
-## Recap
+## สรุป
 
 ตอนนี้ `mobile/` เป็นแอปที่ scaffold ด้วย `flutter create` พร้อมการตัดสินใจสองเรื่องที่กำหนดทุกหน้าจอหลังจากนี้: **Riverpod** สำหรับ state (`ProviderScope` ที่ root, หน้าจอเป็น `ConsumerWidget`) และ **go_router** สำหรับ navigation (route table ที่ expose เป็น `routerProvider` เพื่อให้ gate บน auth ได้ภายหลัง) `lib/main.dart` อยู่ตัวเล็ก — scope กับ `MaterialApp.router` — และที่เหลืออยู่แบบ feature-first ใต้ `lib/src/` โดยกัน `core/` ไว้ให้ router และ API client `flutter analyze` สะอาด, `flutter test` ผ่าน widget test แบบ boot-to-home และ `flutter run` ลงที่ route `/` ต่อไป [Supabase auth →](/fittrack/th/flutter-foundation/supabase-auth/) initialize `supabase_flutter`, สร้างหน้า sign-in/sign-up, expose session เป็น provider และเปลี่ยน `routerProvider` ให้เป็น auth gate จริง

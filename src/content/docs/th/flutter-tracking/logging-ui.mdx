@@ -1,39 +1,39 @@
 ---
 title: The logging UI
-description: "สร้าง flow หลัก: เริ่ม workout, เลือก exercise จาก GET /exercises, เพิ่ม set (reps + weight_kg) แล้ว save ทั้ง session ในครั้งเดียวด้วย POST /workouts Riverpod Notifier ถือ draft ที่กำลังทำอยู่เป็น immutable state; หน้าจอ watch มันและ exercise catalog ทำไมถึงใช้ draft ฝั่ง client และ save แบบ transactional ครั้งเดียว ตรวจสอบด้วยการ log workout สองเซ็ตแล้วเห็นมัน persist ผ่าน API"
+description: "สร้าง flow หลัก: เริ่ม workout, เลือก exercise จาก GET /exercises, เพิ่ม set (reps + weight_kg) แล้ว save ทั้ง session ในครั้งเดียวด้วย POST /workouts Riverpod Notifier ถือ draft ที่กำลังทำอยู่เป็น immutable state; หน้าจอ watch draft นั้นและ exercise catalog ทำไมถึงใช้ draft ฝั่ง client และ save แบบ transactional ครั้งเดียว ตรวจสอบด้วยการ log workout สองเซ็ตแล้วเห็นข้อมูล persist ผ่าน API"
 sidebar:
   order: 1
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-หัวใจของ FitTrack: หน้าจอที่ผู้ใช้ **log workout** ผู้ใช้เริ่ม session, **เลือก exercise** จาก catalog (`GET /exercises`), **เพิ่ม set** — แต่ละอันเป็นจำนวน `reps` กับ `weight_kg` — ก่อรายการขึ้นมา แล้ว **save ทั้งหมดในครั้งเดียว** ด้วย `POST /workouts` ตัวเดียว ตรงตามที่ [Workouts API →](/fittrack/th/workouts/) คาดไว้ (workout และ set ทั้งหมดของมันถูกสร้างใน transaction เดียว) workout ที่กำลังทำอยู่อยู่ใน Riverpod **`Notifier`** เป็น immutable state; หน้าจอ watch draft นั้นและ exercise catalog แล้วเรียก [API client →](/fittrack/th/flutter-foundation/api-client/) จาก module ที่แล้วเพื่อ persist มัน
+หัวใจของ FitTrack: หน้าจอที่ผู้ใช้ **log workout** ผู้ใช้เริ่ม session, **เลือก exercise** จาก catalog (`GET /exercises`), **เพิ่ม set** — แต่ละอันเป็นจำนวน `reps` กับ `weight_kg` — ก่อรายการขึ้นมา แล้ว **save ทั้งหมดในครั้งเดียว** ด้วย `POST /workouts` ตัวเดียว ตรงตามที่ [Workouts API →](/fittrack/th/workouts/) คาดไว้ (workout และ set ทั้งหมดสร้างขึ้นใน transaction เดียว) workout ที่กำลังทำอยู่อยู่ใน Riverpod **`Notifier`** เป็น immutable state; หน้าจอ watch draft นั้นและ exercise catalog แล้วเรียก [API client →](/fittrack/th/flutter-foundation/api-client/) จาก module ที่แล้วเพื่อ persist draft
 
-พอจบบท ผู้ใช้เปิดหน้า logging เพิ่ม "Bench Press — 5 reps @ 60 kg" เพิ่ม set ที่สอง แล้วแตะ **Save** เพื่อ POST session; `201`/`200` พร้อม workout ที่สร้างแล้วยืนยันว่ามันลงถึง Supabase ผ่าน FastAPI
+พอจบบท ผู้ใช้เปิดหน้า logging เพิ่ม "Bench Press — 5 reps @ 60 kg" เพิ่ม set ที่สอง แล้วแตะ **Save** เพื่อ POST session; `201`/`200` พร้อม workout ที่สร้างแล้วยืนยันว่าข้อมูลลงถึง Supabase ผ่าน FastAPI
 
-## Why
+## ทำไม
 
-workout ที่ log แล้ว **ก่อขึ้นมาทีละส่วนแต่ save แบบ atomic** ผู้ใช้เพิ่ม set ทีละอันในช่วงนาทีสองนาที — แต่ backend โมเดล workout กับ set ของมันเป็นหน่วยเดียวที่สร้างใน database transaction เดียว (นั่นคือเหตุผลที่ `POST /workouts` ตาม contract รับ set *ซ้อนอยู่ใน body* ไม่ใช่ทีละ set) งานของ client จึงคือ **สะสม draft ไว้ที่ local** แล้วส่งเป็น payload เดียวเมื่อผู้ใช้ทำเสร็จ draft นั้นคือ state แบบ share-กัน-และ-เปลี่ยนแปลง-ตลอด ที่ Riverpod เกิดมาเพื่อทำ: **`Notifier`** ถือรายการ set, expose method ที่ตั้งชื่อตาม intent (`addSet`, `removeSet`, `clear`) และหน้าจอ `ref.watch` มัน UI จึงสะท้อน draft ปัจจุบันเสมอ
+workout ที่ log แล้ว **ก่อขึ้นมาทีละส่วนแต่ save แบบ atomic** ผู้ใช้เพิ่ม set ทีละอันในช่วงนาทีสองนาที — แต่ backend โมเดล workout กับ set เป็นหน่วยเดียวที่สร้างใน database transaction เดียว (นั่นคือเหตุผลที่ `POST /workouts` ตาม contract รับ set *ซ้อนอยู่ใน body* ไม่ใช่ทีละ set) งานของ client จึงคือ **สะสม draft ไว้ที่ local** แล้วส่งเป็น payload เดียวเมื่อผู้ใช้ทำเสร็จ draft นั้นคือ state แบบ share-กัน-และ-เปลี่ยนแปลง-ตลอด ที่ Riverpod เกิดมาเพื่อทำ: **`Notifier`** ถือรายการ set, expose method ที่ตั้งชื่อตาม intent (`addSet`, `removeSet`, `clear`) และหน้าจอก็ `ref.watch` ตัว Notifier นั้น UI จึงสะท้อน draft ปัจจุบันเสมอ
 
-การเก็บ draft ให้ **immutable** — ทุกการเปลี่ยนแทนที่ state ด้วย object ใหม่แทนที่จะแก้ในที่เดิม — คือสิ่งที่ทำให้ Riverpod rebuild ได้เชื่อถือได้: มันเทียบ state เก่ากับใหม่ด้วย identity list ใหม่จึง trigger repaint ขณะที่ `.add()` แบบ in-place อาจไม่ trigger มันยังทำให้ flow คาดเดาได้และ test ได้: ให้ draft กับ action มา draft ถัดไปเป็น pure function ของสองสิ่งนั้น
+การเก็บ draft ให้ **immutable** — ทุกการเปลี่ยนแทนที่ state ด้วย object ใหม่แทนที่จะแก้ในที่เดิม — คือสิ่งที่ทำให้ Riverpod rebuild ได้เชื่อถือได้: Riverpod เทียบ state เก่ากับใหม่ด้วย identity list ใหม่จึง trigger repaint ส่วน `.add()` แบบ in-place อาจไม่ trigger และยังทำให้ flow คาดเดาได้และ test ได้: ให้ draft กับ action มา draft ถัดไปเป็น pure function ของสองสิ่งนั้น
 
-exercise catalog มาจาก backend มันจึงเป็น **async state** — `FutureProvider` ครอบ `api.listExercises()` แบบธรรมชาติ Riverpod ยื่น loading และ error state ให้ฟรี (`AsyncValue`) picker จึงโชว์ spinner ระหว่าง catalog โหลดและโชว์ error ถ้าโหลดไม่ได้ โดยไม่ต้องจดบัญชี `isLoading` เอง เมื่อผู้ใช้ save draft ถูก serialize เป็น shape ตาม contract แล้วยื่นให้ API client; สำเร็จแล้ว draft ถูก clear และแอปไปต่อได้
+exercise catalog มาจาก backend จึงเป็น **async state** — `FutureProvider` ครอบ `api.listExercises()` แบบธรรมชาติ Riverpod ยื่น loading และ error state ให้ฟรี (`AsyncValue`) picker จึงโชว์ spinner ระหว่าง catalog โหลดและโชว์ error ถ้าโหลดไม่ได้ โดยไม่ต้องจดบัญชี `isLoading` เอง เมื่อผู้ใช้ save draft ถูก serialize เป็น shape ตาม contract แล้วยื่นให้ API client; สำเร็จแล้ว draft ถูก clear และแอปไปต่อได้
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **A client-side draft saved with one `POST /workouts`** vs. **POSTing each set as the user adds it**
 
-- **Pros:** ตรงกับโมเดล transactional ของ backend — workout กับ set ของมันสำเร็จหรือล้มเหลวด้วยกัน ไม่มี session ที่ save ค้างครึ่งทาง; ทำงานแบบ offline-แล้วค่อย-save ได้ตามธรรมชาติ; และมี round-trip น้อยกว่า ผู้ใช้แก้หรือลบ set ได้อิสระก่อน commit อะไร
+- **Pros:** ตรงกับโมเดล transactional ของ backend — workout กับ set สำเร็จหรือล้มเหลวด้วยกัน ไม่มี session ที่ save ค้างครึ่งทาง; ทำงานแบบ offline-แล้วค่อย-save ได้ตามธรรมชาติ; และมี round-trip น้อยกว่า ผู้ใช้แก้หรือลบ set ได้อิสระก่อน commit อะไร
 - **Cons:** draft ที่ยังไม่ save อยู่แค่ใน memory crash กลาง log ก็หายไป (บรรเทาภายหลังด้วย local persistence); และ client ต้องสร้าง nested payload ที่ API คาดไว้ให้ตรงเป๊ะ สำหรับ workout ที่โดยเนื้อแท้เป็น session เดียว atomic save คือโมเดลที่ถูกต้อง
 
 **A Riverpod `Notifier` holding immutable draft state** vs. **local `setState` in the logging screen**
 
 - **Pros:** draft รอดข้าม navigation (เปิด exercise picker บนอีก route แล้วกลับมา set ยังอยู่), unit-test ได้โดยไม่ต้องมี widget และ immutability ทำให้ rebuild ถูกต้องและคาดเดาได้; widget อื่น (ตัวนับ set ใน app bar) watch draft เดียวกันได้
-- **Cons:** มีโครงสร้างมากกว่าหน้าจอที่ขับด้วย `setState` ตัวเดียว; และคุณต้องมีวินัยว่าจะแทนที่ state เสมอ ไม่ mutate มัน เพราะการ log กินพื้นที่ทั้ง picker และ list และต้องไม่หายตอน navigation `Notifier` จึงคุ้ม
+- **Cons:** มีโครงสร้างมากกว่าหน้าจอที่ขับด้วย `setState` ตัวเดียว; และคุณต้องมีวินัยว่าจะแทนที่ state เสมอ ไม่ mutate ของเดิม เพราะการ log กินพื้นที่ทั้ง picker และ list และต้องไม่หายตอน navigation `Notifier` จึงคุ้ม
 
-## Set it up
+## ติดตั้ง
 
-### 1. Models — `lib/src/features/workouts/models.dart`
+### 1. Model — `lib/src/features/workouts/models.dart`
 
 model เล็ก ๆ แบบ immutable ที่ตรงกับ shape ของ API `SetInput` สะท้อน nested set ตาม contract; `WorkoutDraft.toJson` ผลิต body ของ `POST /workouts`
 
@@ -94,7 +94,7 @@ class WorkoutDraft {
 }
 ```
 
-### 2. The catalog provider — `lib/src/features/workouts/exercises_provider.dart`
+### 2. catalog provider — `lib/src/features/workouts/exercises_provider.dart`
 
 ```dart
 // lib/src/features/workouts/exercises_provider.dart
@@ -113,7 +113,7 @@ final exercisesProvider = FutureProvider<List<Exercise>>((ref) async {
 });
 ```
 
-### 3. The draft notifier — `lib/src/features/workouts/logging_controller.dart`
+### 3. draft notifier — `lib/src/features/workouts/logging_controller.dart`
 
 ถือ draft และ action สำหรับ save `saveWorkout` serialize แล้วเรียก API client คืน id ของ workout ที่สร้างเมื่อสำเร็จ
 
@@ -155,7 +155,7 @@ final loggingControllerProvider =
     NotifierProvider<LoggingController, WorkoutDraft>(LoggingController.new);
 ```
 
-### 4. The screen — `lib/src/features/workouts/log_workout_screen.dart`
+### 4. ตัวหน้าจอ — `lib/src/features/workouts/log_workout_screen.dart`
 
 watch draft และ catalog "Add set" เปิด dialog เล็ก ๆ ให้เลือก exercise และกรอก reps + weight; "Save" commit ทั้ง session
 
@@ -287,9 +287,9 @@ class LogWorkoutScreen extends ConsumerWidget {
 }
 ```
 
-### 5. Route to it — update `lib/src/router.dart`
+### 5. ทำ route เข้าหน้านี้ — แก้ `lib/src/router.dart`
 
-เพิ่ม route `/log` และปุ่มบน home screen เพื่อไปถึงมัน:
+เพิ่ม route `/log` และปุ่มบน home screen เพื่อเข้าหน้านั้น:
 
 ```dart
 // lib/src/router.dart — inside routes: [ ... ]
@@ -309,7 +309,7 @@ FilledButton.icon(
 ),
 ```
 
-## Verify
+## ตรวจสอบผล
 
 โดยมี backend รันอยู่และมีอย่างน้อยหนึ่ง exercise ใน catalog (seed หนึ่งตัวผ่าน `POST /exercises` หรือ seed ของ module [Exercises API](/fittrack/th/exercises/)) analyze แล้วรัน:
 
@@ -321,7 +321,7 @@ flutter run \
   --dart-define=API_BASE_URL=http://10.0.2.2:8000
 ```
 
-sign in แตะ **Log a workout** แล้ว **Add set**: เลือก exercise กรอก `5` reps และ `60` kg แล้ว **Add** ทำซ้ำสำหรับ set ที่สอง list โชว์ทั้งคู่ แตะ **Save workout** — snackbar อ่านว่า **Workout saved** และ draft ถูก clear ยืนยันว่ามัน persist จริงด้วยการถาม history ที่ save เพิ่งสร้างจาก backend:
+sign in แตะ **Log a workout** แล้ว **Add set**: เลือก exercise กรอก `5` reps และ `60` kg แล้ว **Add** ทำซ้ำสำหรับ set ที่สอง list โชว์ทั้งคู่ แตะ **Save workout** — snackbar อ่านว่า **Workout saved** และ draft ถูก clear ยืนยันว่าข้อมูล persist จริงด้วยการถาม history ที่ save เพิ่งสร้างจาก backend:
 
 ```bash
 curl -s localhost:8000/workouts \
@@ -346,9 +346,9 @@ flutter test
 
 - ทำไมแอปถึงสะสม draft แล้วส่ง `POST /workouts` ครั้งเดียวแทนที่จะ POST แต่ละ set ตอนเพิ่ม อันนี้สอดคล้องกับการรับประกันอะไรของ backend?
 - `LoggingController.addSet` สร้าง list ใหม่ด้วย `[...state.sets, set]` แทนที่จะเรียก `state.sets.add(set)` ทำไม immutability ถึงสำคัญต่อการที่ Riverpod จะ rebuild หน้าจอ?
-- `WorkoutDraft.toJson` กำหนด `set_index` จากตำแหน่งใน list index นั้นมาจากไหนในโค้ด และทำไม backend ถึงอยากได้มัน?
-- catalog เป็น `exercisesProvider` (ตัว `FutureProvider`) มันให้ UI state สองอย่างอะไรกับคุณฟรี ที่การ fetch เองจะทำให้คุณต้องตามจดเอง?
+- `WorkoutDraft.toJson` กำหนด `set_index` จากตำแหน่งใน list index นั้นมาจากไหนในโค้ด และทำไม backend ถึงอยากได้ค่านั้น?
+- catalog เป็น `exercisesProvider` (ตัว `FutureProvider`) provider ตัวนี้ให้ UI state สองอย่างอะไรฟรี ๆ ที่การ fetch เองจะทำให้คุณต้องตามจดเอง?
 
-## Recap
+## สรุป
 
 หน้า logging คือ flow หลักของ FitTrack: Riverpod **`Notifier`** (`LoggingController`) ถือ **`WorkoutDraft` แบบ immutable**, ผู้ใช้เพิ่ม set (exercise + `reps` + `weight_kg`) ที่ดึงมาจาก `exercisesProvider` ซึ่งป้อนด้วย `GET /exercises` และ **Save** serialize draft เป็น nested body ตาม contract แล้วส่ง **`POST /workouts`** ตัวเดียวผ่าน [API client](/fittrack/th/flutter-foundation/api-client/) — workout และ set ทั้งหมด commit ใน backend transaction เดียว immutable state ทำให้ rebuild ถูกต้อง และ `ApiException` โชว์การ save ที่ล้มเหลวให้ผู้ใช้เห็น ต่อไป [History and progress →](/fittrack/th/flutter-tracking/history-and-progress/) อ่าน session กลับด้วย `GET /workouts` และแสดง trend จาก endpoint `GET /progress/*`

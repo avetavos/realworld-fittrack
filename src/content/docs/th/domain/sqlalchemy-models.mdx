@@ -1,43 +1,43 @@
 ---
 title: SQLAlchemy models
-description: "app/models/ — Base(DeclarativeBase) และสี่ SQLAlchemy 2.0 model (Profile, Exercise, Workout, WorkoutSet) เขียนด้วย Mapped/mapped_column และ typed relationship สะท้อน Supabase migration แบบ column ต่อ column ทำไม model ถึงเขียนซ้ำ schema ที่ database เป็นเจ้าของอยู่แล้ว ทำไม annotation อย่างเดียวก็บอก nullability และ relationship() บวก cascade ทำให้คุณสร้าง workout กับ set ของมันเป็น object graph เดียวได้ยังไง ตรวจสอบด้วยการ import metadata แล้วดูชื่อ table ทั้งสี่ register"
+description: "app/models/ — Base(DeclarativeBase) และสี่ SQLAlchemy 2.0 model (Profile, Exercise, Workout, WorkoutSet) เขียนด้วย Mapped/mapped_column และ typed relationship สะท้อน Supabase migration แบบ column ต่อ column ทำไม model ถึงเขียนซ้ำ schema ที่ database เป็นเจ้าของอยู่แล้ว ทำไม annotation อย่างเดียวก็บอก nullability และ relationship() บวก cascade ทำให้คุณสร้าง workout พร้อม set เป็น object graph เดียวได้ยังไง ตรวจสอบด้วยการ import metadata แล้วดูชื่อ table ทั้งสี่ register"
 sidebar:
   order: 1
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-`app/models/` — สี่ database table ของ FitTrack ในรูป Python class Supabase migration สร้าง `profiles`, `exercises`, `workouts`, และ `workout_sets` ใน Postgres ไปแล้ว; บทนี้ให้ FastAPI มี **ภาพในโค้ดที่ typed** ของ table พวกนั้น ดังนั้น backend ที่เหลืออ่านและเขียน row เป็น object แทน SQL ที่เขียนเอง คุณสร้าง `Base` หนึ่งตัวและสี่ model — `Profile`, `Exercise`, `Workout`, `WorkoutSet` — ด้วย style `Mapped` / `mapped_column` ของ SQLAlchemy 2.0 แล้วเชื่อมพวกมันด้วย `relationship()` ดังนั้น `Workout` ถือ `sets` ของมันเป็น list
+`app/models/` — สี่ database table ของ FitTrack ในรูป Python class Supabase migration สร้าง `profiles`, `exercises`, `workouts`, และ `workout_sets` ใน Postgres ไปแล้ว; บทนี้ให้ FastAPI มี **ภาพในโค้ดที่ typed** ของ table พวกนั้น ดังนั้น backend ที่เหลืออ่านและเขียน row เป็น object แทน SQL ที่เขียนเอง คุณสร้าง `Base` หนึ่งตัวและสี่ model — `Profile`, `Exercise`, `Workout`, `WorkoutSet` — ด้วย style `Mapped` / `mapped_column` ของ SQLAlchemy 2.0 แล้วเชื่อมทั้งสี่ด้วย `relationship()` ดังนั้น `Workout` ถือ `sets` เป็น list
 
-model พวกนี้คือฐานรากที่ทั้ง data layer ตั้งอยู่: [Schemas & repositories →](/fittrack/th/domain/schemas-and-repositories/) ห่อพวกมันใน Pydantic schema และ repository class และทุก API module ตั้งแต่ Exercises เป็นต้นไปอ่านและเขียนผ่านพวกมันบน async session จาก [Async database →](/fittrack/th/fastapi/async-database/)
+model พวกนี้คือฐานรากที่ทั้ง data layer ตั้งอยู่: [Schemas & repositories →](/fittrack/th/domain/schemas-and-repositories/) ห่อ model พวกนี้ใน Pydantic schema และ repository class และทุก API module ตั้งแต่ Exercises เป็นต้นไปก็อ่านและเขียนผ่าน model พวกนี้บน async session จาก [Async database →](/fittrack/th/fastapi/async-database/)
 
-## Why
+## ทำไม
 
-database เป็นเจ้าของ schema อยู่แล้ว — แล้วทำไมต้องเขียนซ้ำใน Python? เพราะทางเลือกคือกระจาย raw SQL และ tuple ที่ไม่ typed ข้ามทุก endpoint (เป๊ะกับที่ `/me` ทำเป็นการชั่วคราว) model ให้คุณสามอย่างพร้อมกัน: **type** (`Workout.notes` เป็น `str | None` และ editor กับ type checker ของคุณรู้), **query surface** (`select(Workout).where(...)` แทน string SQL), และที่ทางสำหรับประกาศ **relationship** ดังนั้น row ที่เกี่ยวข้อง load เป็น object ที่เชื่อมกัน model คือ definition ในโค้ดเดียวว่า row *คือ* อะไร; ทุกอย่างเหนือมัน — schema, repository, router — สร้างบนนั้นแทนที่จะ derive มันใหม่
+database เป็นเจ้าของ schema อยู่แล้ว — แล้วทำไมต้องเขียนซ้ำใน Python? เพราะทางเลือกคือกระจาย raw SQL และ tuple ที่ไม่ typed ข้ามทุก endpoint (เป๊ะกับที่ `/me` ทำเป็นการชั่วคราว) model ให้คุณสามอย่างพร้อมกัน: **type** (`Workout.notes` เป็น `str | None` และ editor กับ type checker ของคุณรู้), **query surface** (`select(Workout).where(...)` แทน string SQL), และที่ทางสำหรับประกาศ **relationship** ดังนั้น row ที่เกี่ยวข้อง load เป็น object ที่เชื่อมกัน model คือ definition ในโค้ดเดียวว่า row *คือ* อะไร; ทุกอย่างที่อยู่เหนือขึ้นไป — schema, repository, router — สร้างต่อจากนั้นแทนที่จะ derive ใหม่เอง
 
-declarative style ของ SQLAlchemy 2.0 พึ่ง Python type annotation ซึ่งทำให้ model อ่านเกือบเหมือน SQL ที่มันสะท้อน:
+declarative style ของ SQLAlchemy 2.0 พึ่ง Python type annotation ซึ่งทำให้ model อ่านเกือบเหมือน SQL ที่สะท้อนออกมา:
 
 - **`Mapped[str]` เทียบกับ `Mapped[str | None]`** — annotation เองตัดสิน nullability `Mapped[str]` คือ `NOT NULL`; `Mapped[str | None]` คือ nullable คุณไม่ต้องเขียน `nullable=True` ซ้ำ; type *คือ* การประกาศ ดังนั้น `Workout.notes: Mapped[str | None]` และ `Exercise.created_by: Mapped[UUID | None]` เป็น nullable เป๊ะเพราะ migration ทำ column พวกนั้นเป็น nullable
-- **`mapped_column(...)`** คือที่ที่อะไรก็ตามที่เกินกว่า type ไปอยู่: `primary_key=True`, `ForeignKey`, หรือ `server_default` เราใช้ **`server_default`** (เช่น `text("gen_random_uuid()")`, `func.now()`) แทน default ฝั่ง Python ดังนั้น *database* เติมค่าพวกนี้ — match กับ migration เป๊ะ และหมายถึง object ที่เพิ่งสร้างได้ id และ timestamp ของมันจาก Postgres, ค่าเดียวกับที่ client อื่นทุกตัวจะเห็น
-- **`relationship()`** ประกาศ link ระหว่าง table `Workout.sets` เป็น `list[WorkoutSet]`; `WorkoutSet.workout` ชี้กลับ การประกาศทั้งสองปลายด้วย `back_populates` เก็บพวกมัน sync กันในหน่วยความจำ `cascade="all, delete-orphan"` บน `Workout.sets` หมายถึง set มีชีวิตและตายกับ workout ของมัน — append `WorkoutSet` เข้า `workout.sets` แล้ว save workout จะ persist ทั้งคู่ และการลบ workout จะลบ set ของมัน นั่นคือสิ่งที่ให้ module ถัดไปสร้างทั้ง session ในโค้ดชิ้นเดียวแบบเป็นธรรมชาติ
+- **`mapped_column(...)`** คือที่ที่อะไรก็ตามที่เกินกว่า type ไปอยู่: `primary_key=True`, `ForeignKey`, หรือ `server_default` เราใช้ **`server_default`** (เช่น `text("gen_random_uuid()")`, `func.now()`) แทน default ฝั่ง Python ดังนั้น *database* เติมค่าพวกนี้ — match กับ migration เป๊ะ และหมายถึง object ที่เพิ่งสร้างจะได้ id และ timestamp จาก Postgres, ค่าเดียวกับที่ client อื่นทุกตัวจะเห็น
+- **`relationship()`** ประกาศ link ระหว่าง table `Workout.sets` เป็น `list[WorkoutSet]`; `WorkoutSet.workout` ชี้กลับ การประกาศทั้งสองปลายด้วย `back_populates` เก็บทั้งสองด้าน sync กันในหน่วยความจำ `cascade="all, delete-orphan"` บน `Workout.sets` หมายถึง set เกิดและตายไปพร้อม workout — append `WorkoutSet` เข้า `workout.sets` แล้ว save workout จะ persist ทั้งคู่ และการลบ workout จะลบ set ทิ้งตามไปด้วย นั่นคือสิ่งที่ให้ module ถัดไปสร้างทั้ง session ในโค้ดชิ้นเดียวแบบเป็นธรรมชาติ
 
 การเก็บ model ให้ **faithful กับ migration** คือกฎที่สำคัญที่สุด migration คือ source of truth สำหรับ database จริง; ถ้า model ไม่ตรง (nullability ผิด, ขาด default) ORM จะสร้าง object ที่ Postgres แล้วปฏิเสธ ทุก column ด้านล่าง match กับ SQL จาก Supabase module แบบหนึ่งต่อหนึ่ง
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **`Mapped` / `mapped_column` ของ SQLAlchemy 2.0** เทียบกับ **style `Column` / `declarative_base()` แบบเก่า**
 
-- **Pros:** column เป็น typed attribute ธรรมดา ดังนั้น editor autocomplete มันและ type checker จับ `workout.reps` (ไม่มี field นั้น) ตอน author time; nullability มาจาก annotation ตรง ๆ ดังนั้น model อ่านเหมือน schema; relationship เป็น typed (`Mapped[list[WorkoutSet]]`) ดังนั้น object graph อ่านออกได้โดยไม่ต้องรันอะไร
-- **Cons:** มันเป็น API ที่ใหม่กว่า ดังนั้น tutorial เก่าและคำตอบใน Stack Overflow เยอะยังโชว์ `Column(...)` และ `Integer` ซึ่งไม่ตรงกับที่คุณเขียน — คุณต้องตั้งใจตามเนื้อหายุค 2.0 ผลตอบแทนด้าน type safety คุ้มกับความไม่ตรงตอนต้น
+- **Pros:** column เป็น typed attribute ธรรมดา ดังนั้น editor autocomplete ให้ และ type checker จับ `workout.reps` (ไม่มี field นั้น) ตอน author time; nullability มาจาก annotation ตรง ๆ ดังนั้น model อ่านเหมือน schema; relationship เป็น typed (`Mapped[list[WorkoutSet]]`) ดังนั้น object graph อ่านออกได้โดยไม่ต้องรันอะไร
+- **Cons:** นี่คือ API ที่ใหม่กว่า ดังนั้น tutorial เก่าและคำตอบใน Stack Overflow เยอะยังโชว์ `Column(...)` และ `Integer` ซึ่งไม่ตรงกับที่คุณเขียน — คุณต้องตั้งใจตามเนื้อหายุค 2.0 ผลตอบแทนด้าน type safety คุ้มกับความไม่ตรงตอนต้น
 
 **model relationship ด้วย `relationship()` + cascade** เทียบกับ **ปฏิบัติทุก table แยกกันแล้ว join เอง**
 
-- **Pros:** `Workout` และ `WorkoutSet` ของมันทำตัวเป็น object graph เดียว — สร้าง parent, append children, save ครั้งเดียว; delete cascade; การอ่าน eager-load set ได้ใน query ที่วางแผนไว้เดียว domain อ่านเหมือนที่คุณคิดถึงมัน ("workout มี set") ไม่ใช่การจับคู่ id ที่ตัดขาดกัน
+- **Pros:** `Workout` กับ `WorkoutSet` ทำตัวเป็น object graph เดียว — สร้าง parent, append children, save ครั้งเดียว; delete cascade; การอ่าน eager-load set ได้ใน query ที่วางแผนไว้เดียว domain อ่านตรงกับที่คุณคิดจริง ๆ ("workout มี set") ไม่ใช่การจับคู่ id ที่ตัดขาดกัน
 - **Cons:** relationship เพิ่ม behavior ที่คุณต้องเข้าใจเพื่อใช้อย่างปลอดภัย — ใน async SQLAlchemy ไม่มี lazy loading คุณจึงต้อง eager-load (`selectinload`) collection ที่เกี่ยวข้องชัด ๆ ไม่งั้นเจอ runtime error นั่นคือ gotcha จริง ๆ ที่ครอบคลุมตรง ๆ ตอน repository load workout บทถัดไป ความชัดของ object graph มีน้ำหนักมากกว่าการต้องชัดเจนเรื่อง loading
 
-## Set it up
+## ติดตั้ง
 
-`app/models/` เป็น package: `Base`, หนึ่งไฟล์ต่อ model, และ `__init__.py` ที่ import ทั้งสี่ ดังนั้นพวกมัน register บน metadata เดียวกัน
+`app/models/` เป็น package: `Base`, หนึ่งไฟล์ต่อ model, และ `__init__.py` ที่ import ทั้งสี่ ดังนั้นทุกตัว register บน metadata เดียวกัน
 
 ### 1. `app/models/base.py`
 
@@ -206,7 +206,7 @@ class WorkoutSet(Base):
 
 ### 6. `app/models/__init__.py`
 
-ตรงนี้ import ทุก model ดังนั้นพวกมันทั้งหมด register บน `Base.metadata` และ relationship string resolve ได้:
+ตรงนี้ import ทุก model ดังนั้นทั้งหมด register บน `Base.metadata` และ relationship string resolve ได้:
 
 ```python
 # app/models/__init__.py — one place to import the whole model set from.
@@ -219,9 +219,9 @@ from app.models.workout_set import WorkoutSet
 __all__ = ["Base", "Profile", "Exercise", "Workout", "WorkoutSet"]
 ```
 
-## Verify
+## ตรวจสอบผล
 
-model ยังไม่ power endpoint ใหม่ — การ check คือว่าพวกมัน **register ถูกต้อง**: class import โดยไม่มี error และผลิตสี่ table ที่ migration สร้างเป๊ะ พร้อม column ที่ถูกต้อง รัน one-liner ผ่าน `uv`:
+model ยังไม่ power endpoint ใหม่ — สิ่งที่ต้อง check คือ model **register ถูกต้อง**: class import โดยไม่มี error และผลิตสี่ table ที่ migration สร้างเป๊ะ พร้อม column ที่ถูกต้อง รัน one-liner ผ่าน `uv`:
 
 ```bash
 uv run python -c "from app.models import Base; print(sorted(Base.metadata.tables))"
@@ -231,7 +231,7 @@ uv run python -c "from app.models import Base; print(sorted(Base.metadata.tables
 ['exercises', 'profiles', 'workout_sets', 'workouts']
 ```
 
-สี่ชื่อ match กับ schema ตอนนี้ยืนยัน mapping เฉพาะ — ว่า `weight_kg` เป็น `NUMERIC(6, 2)` และ `notes` เป็น nullable — ดังนั้นคุณรู้ว่า model ตรงกับ database ไม่ใช่แค่ว่ามัน import:
+สี่ชื่อ match กับ schema ตอนนี้ยืนยัน mapping เฉพาะ — ว่า `weight_kg` เป็น `NUMERIC(6, 2)` และ `notes` เป็น nullable — ดังนั้นคุณรู้ว่า model ตรงกับ database ไม่ใช่แค่ import ผ่าน:
 
 ```bash
 uv run python -c "
@@ -250,11 +250,11 @@ notes nullable: True
 
 ตรวจสอบความเข้าใจ:
 
-- database define table พวกนี้ไปแล้ว การเขียนมันซ้ำเป็น SQLAlchemy model ซื้ออะไรสามอย่างให้ backend ที่เหลือที่ raw SQL ไม่ให้?
+- database define table พวกนี้ไปแล้ว การเขียนซ้ำเป็น SQLAlchemy model ซื้ออะไรสามอย่างให้ backend ที่เหลือที่ raw SQL ไม่ให้?
 - `Workout.notes` เป็น `Mapped[str | None]` และ `Workout.user_id` เป็น `Mapped[UUID]` SQLAlchemy 2.0 ตัดสินยังไงว่า column ไหน nullable และคุณจะใส่ `ForeignKey` ที่ไหน?
 - ทำไม column id และ timestamp ถึงใช้ `server_default` (เช่น `text("gen_random_uuid()")`, `func.now()`) แทน default ฝั่ง Python?
-- `Workout.sets` ประกาศ `cascade="all, delete-orphan"` มันให้คุณทำอะไรได้ตอนสร้าง workout และเกิดอะไรกับ set เมื่อ workout ถูกลบ?
+- `Workout.sets` ประกาศ `cascade="all, delete-orphan"` ค่านี้ให้คุณทำอะไรได้ตอนสร้าง workout และเกิดอะไรกับ set เมื่อลบ workout?
 
-## Recap
+## สรุป
 
-`app/models/` คือภาพที่ typed ของสี่ Postgres table ของ FitTrack: `Base(DeclarativeBase)` บวก `Profile`, `Exercise`, `Workout`, และ `WorkoutSet` เขียนใน style `Mapped` / `mapped_column` ของ SQLAlchemy 2.0 ดังนั้น annotation ถือ nullability และ `mapped_column` ถือ key, foreign key, และ server default — ทุก column faithful กับ Supabase migration `relationship()` เชื่อมพวกมัน (`Workout.sets` ⇄ `WorkoutSet.workout` พร้อม `cascade="all, delete-orphan"`) ดังนั้น session และ set ของมันก่อตัวเป็น object graph เดียวที่คุณสร้างและลบเป็นหน่วยได้ การ import metadata แสดงสี่ table register พร้อม column type ที่ถูกต้อง model พวกนี้เฉื่อยอยู่ลำพัง — มันต้องการ boundary ที่ validate แล้วสำหรับ input และ output และที่ทางสำหรับใส่ query ต่อไป [Schemas & repositories →](/fittrack/th/domain/schemas-and-repositories/) เพิ่ม Pydantic v2 schema และ async `ExerciseRepo` / `WorkoutRepo` ที่เปลี่ยน model พวกนี้เป็นชั้น read/write ที่ทุก API module เรียก
+`app/models/` คือภาพที่ typed ของสี่ Postgres table ของ FitTrack: `Base(DeclarativeBase)` บวก `Profile`, `Exercise`, `Workout`, และ `WorkoutSet` เขียนใน style `Mapped` / `mapped_column` ของ SQLAlchemy 2.0 ดังนั้น annotation ถือ nullability และ `mapped_column` ถือ key, foreign key, และ server default — ทุก column faithful กับ Supabase migration `relationship()` เชื่อมทั้งหมดเข้าด้วยกัน (`Workout.sets` ⇄ `WorkoutSet.workout` พร้อม `cascade="all, delete-orphan"`) ดังนั้น session พร้อม set ก่อตัวเป็น object graph เดียวที่คุณสร้างและลบเป็นหน่วยได้ การ import metadata แสดงสี่ table register พร้อม column type ที่ถูกต้อง model พวกนี้อยู่ลำพังก็ยังทำอะไรไม่ได้ — ต้องมี boundary ที่ validate แล้วสำหรับ input และ output และที่ทางสำหรับใส่ query ต่อไป [Schemas & repositories →](/fittrack/th/domain/schemas-and-repositories/) เพิ่ม Pydantic v2 schema และ async `ExerciseRepo` / `WorkoutRepo` ที่เปลี่ยน model พวกนี้เป็นชั้น read/write ที่ทุก API module เรียก

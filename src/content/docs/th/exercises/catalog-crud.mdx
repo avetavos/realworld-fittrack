@@ -5,37 +5,37 @@ sidebar:
   order: 1
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-resource router ตัวแรกใน FitTrack: `app/routers/exercises.py` มันเปิด route สามตัวเหนือ model `Exercise`, schemas และ `ExerciseRepo` ที่คุณสร้างไว้ใน [The Domain Model →](/fittrack/th/domain/schemas-and-repositories/):
+resource router ตัวแรกใน FitTrack: `app/routers/exercises.py` เปิด route สามตัวเหนือ model `Exercise`, schemas และ `ExerciseRepo` ที่คุณสร้างไว้ใน [The Domain Model →](/fittrack/th/domain/schemas-and-repositories/):
 
 - `GET /exercises` — catalog ที่ **คุณ** เห็นได้: exercise สาธารณะทุกตัว (ตัว global ที่ seed มา) บวกกับตัว private ที่คุณสร้างเอง
 - `POST /exercises` — สร้าง exercise ใหม่ที่คุณเป็นเจ้าของ
-- `GET /exercises/{id}` — ดึง exercise ตัวเดียว ถ้ามันเป็นตัวที่คุณเห็นได้
+- `GET /exercises/{id}` — ดึง exercise ตัวเดียว ถ้าเป็นตัวที่คุณเห็นได้
 
-ทุก route ต้องผ่าน auth: มันรับ `Depends(get_current_user)` เพื่อรู้ว่า *ใคร* เป็นคนถาม และ `Depends(get_session)` เพื่อขอ database session แล้วส่งงานจริงต่อให้ `ExerciseRepo` บทนี้วางรูปแบบที่ router ทุกตัวหลังจากนี้จะทำตาม — HTTP layer บาง ๆ เหนือ repository — และวางกฎ visibility (สาธารณะหรือของฉัน) ที่ catalog ทั้งหมดหมุนอยู่รอบมัน จากนั้น [Ownership & validation →](/fittrack/th/exercises/ownership-and-validation/) จะเพิ่มครึ่งที่แก้ข้อมูล (`PATCH`/`DELETE`)
+ทุก route ต้องผ่าน auth: แต่ละตัวรับ `Depends(get_current_user)` เพื่อรู้ว่า *ใคร* เป็นคนถาม และ `Depends(get_session)` เพื่อขอ database session แล้วส่งงานจริงต่อให้ `ExerciseRepo` บทนี้วางรูปแบบที่ router ทุกตัวหลังจากนี้จะทำตาม — HTTP layer บาง ๆ เหนือ repository — และวางกฎ visibility (สาธารณะหรือของฉัน) ที่ catalog ทั้งหมดหมุนรอบ จากนั้น [Ownership & validation →](/fittrack/th/exercises/ownership-and-validation/) จะเพิ่มครึ่งที่แก้ข้อมูล (`PATCH`/`DELETE`)
 
-## Why
+## ทำไม
 
-`Exercise` มี flag `is_public` และ `created_by` ที่เป็น null ได้ การจับคู่แบบนี้เข้ารหัส exercise สองแบบไว้ในตัวเดียว: **global catalog entries** (seed มา, `is_public = true`, `created_by = null` — "Barbell Squat", "Bench Press") ที่ทุกคนใช้ร่วมกัน และ **personal exercises** ที่ user คิดขึ้นเอง (`created_by = ตัวเขา` ปกติเป็น private) บรรทัดที่สำคัญที่สุดใน module นี้จึงเป็นกฎ visibility: *คุณเห็น exercise ได้ถ้ามันเป็นสาธารณะ **หรือ** คุณสร้างมันเอง* การเขียนกฎนี้ให้เป็น SQL `WHERE` clause — ไม่ใช่ Python loop วนทุกแถว — คือสิ่งที่ทำให้ catalog ทั้งถูกต้องและ scale ได้
+`Exercise` มี flag `is_public` และ `created_by` ที่เป็น null ได้ การจับคู่แบบนี้เข้ารหัส exercise สองแบบไว้ในตัวเดียว: **global catalog entries** (seed มา, `is_public = true`, `created_by = null` — "Barbell Squat", "Bench Press") ที่ทุกคนใช้ร่วมกัน และ **personal exercises** ที่ user คิดขึ้นเอง (`created_by = ตัวเขา` ปกติเป็น private) บรรทัดที่สำคัญที่สุดใน module นี้จึงเป็นกฎ visibility: *คุณเห็น exercise ได้ถ้าเป็นสาธารณะ **หรือ** คุณสร้างเอง* การเขียนกฎนี้ให้เป็น SQL `WHERE` clause — ไม่ใช่ Python loop วนทุกแถว — คือสิ่งที่ทำให้ catalog ทั้งถูกต้องและ scale ได้
 
-ตัว router เองถูกออกแบบให้ **บาง** อย่างตั้งใจ งานของ FastAPI ใน `exercises.py` คือแปลง HTTP เป็นการเรียกฟังก์ชัน แล้วแปลงผลลัพธ์กลับเป็น HTTP: ดึง user id จาก token, รับ session, เรียก repository method หนึ่งตัว, คืนผลของมัน SQL ทั้งหมดอยู่ใน `ExerciseRepo` การแยกแบบนี้คือเหตุผลที่ repository เดียวกันถูก reuse ได้ทีหลังทั้งจาก test และจาก workouts module โดยไม่ต้องลาก FastAPI ไปด้วย และเป็นเหตุผลที่ route handler แต่ละตัวเหลือแค่สามสี่บรรทัดที่อ่านง่าย
+ตัว router เองถูกออกแบบให้ **บาง** อย่างตั้งใจ งานของ FastAPI ใน `exercises.py` คือแปลง HTTP เป็นการเรียกฟังก์ชัน แล้วแปลงผลลัพธ์กลับเป็น HTTP: ดึง user id จาก token, รับ session, เรียก repository method หนึ่งตัว แล้วคืนผลลัพธ์ ส่วน SQL ทั้งหมดอยู่ใน `ExerciseRepo` การแยกแบบนี้คือเหตุผลที่ repository เดียวกัน reuse ได้ทีหลังทั้งจาก test และจาก workouts module โดยไม่ต้องลาก FastAPI ไปด้วย และเป็นเหตุผลที่ route handler แต่ละตัวเหลือแค่สามสี่บรรทัดที่อ่านง่าย
 
-จุดละเอียดสุดท้ายคือ **"not found" หมายความว่าอะไร** `GET /exercises/{id}` ด้วย id ที่ไม่มีอยู่ ชัดเจนว่าเป็น `404` แต่ `GET` สำหรับ *exercise private ที่คนอื่นเป็นเจ้าของ* ก็เป็น `404` เช่นกัน — ไม่ใช่ `403` — เพราะการบอกคนนอกว่า "ตัวนี้มีอยู่นะแต่คุณเอาไปไม่ได้" คือการเปิดเผยว่ามันมีอยู่ตั้งแต่แรก สำหรับการอ่าน คุณอาจเห็นสิ่งนั้นได้ หรือไม่ก็ในมุมของคุณ มันไม่มีอยู่ ([Ownership & validation →](/fittrack/th/exercises/ownership-and-validation/) ลากเส้นตรงข้ามสำหรับ *write* บน exercise ที่คุณ *เห็นได้*)
+จุดละเอียดสุดท้ายคือ **"not found" หมายความว่าอะไร** `GET /exercises/{id}` ด้วย id ที่ไม่มีอยู่ ชัดเจนว่าเป็น `404` แต่ `GET` สำหรับ *exercise private ที่คนอื่นเป็นเจ้าของ* ก็เป็น `404` เช่นกัน — ไม่ใช่ `403` — เพราะการบอกคนนอกว่า "ตัวนี้มีอยู่นะแต่คุณเอาไปไม่ได้" คือการเปิดเผยว่ามีอยู่ตั้งแต่แรก สำหรับการอ่าน คุณอาจเห็นสิ่งนั้นได้ หรือไม่ก็ในมุมของคุณคือไม่มีอยู่ ([Ownership & validation →](/fittrack/th/exercises/ownership-and-validation/) ลากเส้นตรงข้ามสำหรับ *write* บน exercise ที่คุณ *เห็นได้*)
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Filtering visibility in the SQL query** vs. **fetching every exercise and filtering in Python**
 
-- **Pros:** database ทำสิ่งที่มันถูกสร้างมาเพื่อทำ — `where is_public or created_by = :me` ที่ทำ index ได้คืนเฉพาะแถวที่ user เห็นได้ ดังนั้น app ไม่เคยโหลดข้อมูล private ของคนอื่นเข้า memory, ขนาด response ถูกจำกัดด้วยสิ่งที่เกี่ยวข้อง และกฎอยู่ในที่เดียวเป๊ะ ๆ มันยังเร็วอยู่แม้ catalog จะโตเป็นพันแถว
-- **Cons:** ตอนนี้ predicate ของ visibility เป็น SQL ที่คุณต้องอ่านเพื่อเข้าใจ access control แทนที่จะเป็น Python `if` ที่เห็นชัด ๆ และความผิดพลาดเล็ก ๆ ใน `WHERE` clause คือ bug ข้อมูลรั่ว มันจึงคู่ควรกับ test ความปลอดภัยและ performance ชนะขาด — filter ใน Python แปลว่าต้อง fetch ทุกอย่างมาก่อน ซึ่งทั้งช้ากว่าและเป็นหลุมความเป็นส่วนตัวที่ซ่อนอยู่
+- **Pros:** database ทำสิ่งที่ถูกสร้างมาเพื่อทำ — `where is_public or created_by = :me` ที่ทำ index ได้คืนเฉพาะแถวที่ user เห็นได้ ดังนั้น app ไม่เคยโหลดข้อมูล private ของคนอื่นเข้า memory, ขนาด response ถูกจำกัดด้วยสิ่งที่เกี่ยวข้อง และกฎอยู่ในที่เดียวเป๊ะ ๆ ยังเร็วอยู่แม้ catalog จะโตเป็นพันแถว
+- **Cons:** ตอนนี้ predicate ของ visibility เป็น SQL ที่คุณต้องอ่านเพื่อเข้าใจ access control แทนที่จะเป็น Python `if` ที่เห็นชัด ๆ และความผิดพลาดเล็ก ๆ ใน `WHERE` clause คือ bug ข้อมูลรั่ว จึงคู่ควรกับ test ความปลอดภัยและ performance ชนะขาด — filter ใน Python แปลว่าต้อง fetch ทุกอย่างมาก่อน ซึ่งทั้งช้ากว่าและเป็นหลุมความเป็นส่วนตัวที่ซ่อนอยู่
 
 **A thin router delegating to `ExerciseRepo`** vs. **writing the `select()` directly in the route handler**
 
 - **Pros:** handler อ่านออกมาเป็น intent ("list exercise ที่ user นี้เห็นได้"), SQL ทำ unit-test ได้โดยไม่ต้องมี HTTP client และ module ของ workouts กับ progress reuse repository style เดียวกัน การเปลี่ยนวิธีที่ query ทำงานไม่แตะ route เลย
-- **Cons:** มันคืออีกหนึ่ง layer และอีกหนึ่งไฟล์สำหรับสิ่งที่วันนี้เป็นแค่ query บรรทัดเดียว — indirection ที่คุณไม่จำเป็นต้องมีจริง ๆ สำหรับสาม route มันคุ้มค่าทันทีที่ query ถูก reuse หรืองอก join ขึ้นมา ซึ่งทุก resource ในนี้ล้วนไปถึงจุดนั้นในที่สุด
+- **Cons:** นี่คืออีกหนึ่ง layer และอีกหนึ่งไฟล์สำหรับสิ่งที่วันนี้เป็นแค่ query บรรทัดเดียว — indirection ที่คุณไม่จำเป็นต้องมีจริง ๆ สำหรับสาม route แต่คุ้มค่าทันทีที่ query ถูก reuse หรืองอก join ขึ้นมา ซึ่งทุก resource ในนี้ล้วนไปถึงจุดนั้นในที่สุด
 
-## Set it up
+## ติดตั้ง
 
 ### 1. `app/repositories/exercise.py`
 
@@ -139,9 +139,9 @@ async def get_exercise(
     return exercise
 ```
 
-### 3. Wire the router into `app/main.py`
+### 3. ต่อ router เข้า `app/main.py`
 
-`main.py` ยังเล็กอยู่ — มันแค่ include router (ตามที่ [The Python toolchain →](/fittrack/th/setup/python-toolchain/) สัญญาไว้ว่าจะเป็นแบบนี้เสมอ):
+`main.py` ยังเล็กอยู่ — แค่ include router (ตามที่ [The Python toolchain →](/fittrack/th/setup/python-toolchain/) สัญญาไว้ว่าจะเป็นแบบนี้เสมอ):
 
 ```python
 # app/main.py
@@ -159,7 +159,7 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 ```
 
-## Verify
+## ตรวจสอบผล
 
 เริ่ม API (`uv run fastapi dev app/main.py`) พร้อมกับ local Supabase stack ที่รันอยู่ ทุก route ต้องผ่าน auth ดังนั้นก่อนอื่นขอ **JWT จาก Supabase Auth** ด้วยการ sign in เข้า local GoTrue server (ถ้าคุณยังไม่ได้สร้าง user เปลี่ยน `token?grant_type=password` เป็น `signup`)
 
@@ -185,7 +185,7 @@ curl -s localhost:8000/exercises -H "Authorization: Bearer $TOKEN" | jq
 []
 ```
 
-สร้างตัวของคุณเองสักตัว แล้วเก็บ id ของมันไว้:
+สร้างตัวของคุณเองสักตัว แล้วเก็บ id ไว้:
 
 ```bash
 ID=$(curl -s -X POST localhost:8000/exercises \
@@ -206,7 +206,7 @@ ID=$(curl -s -X POST localhost:8000/exercises \
 }
 ```
 
-ดึงมันกลับด้วย id แล้วยืนยันกฎ missing-vs-forbidden — id มั่ว ๆ ให้ `404`:
+ดึงกลับมาด้วย id แล้วยืนยันกฎ missing-vs-forbidden — id มั่ว ๆ ให้ `404`:
 
 ```bash
 curl -s localhost:8000/exercises/$ID -H "Authorization: Bearer $TOKEN" | jq .name
@@ -233,10 +233,10 @@ curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/exercises
 ตรวจสอบความเข้าใจ:
 
 - ทำไมกฎ public-or-mine ถึงเขียนเป็น SQL `WHERE` clause แทนที่จะ fetch exercise ทุกตัวมาแล้ว filter ใน Python? บอกทั้งเหตุผลด้าน performance และด้าน privacy
-- `GET /exercises/{id}` คืน `404` สำหรับ exercise private ที่คุณไม่ได้เป็นเจ้าของ แม้ว่ามันจะมีอยู่ การคืน `403` แทนจะเปิดเผยอะไร?
+- `GET /exercises/{id}` คืน `404` สำหรับ exercise private ที่คุณไม่ได้เป็นเจ้าของ แม้ว่าแถวนั้นจะมีอยู่จริง การคืน `403` แทนจะเปิดเผยอะไร?
 - route handler แต่ละตัวมีสามหรือสี่บรรทัด SQL จริง ๆ อยู่ที่ไหน และการแยกแบบนั้นให้ประโยชน์อะไรตอนคุณเขียน test?
 - `create()` เซ็ต `created_by` จาก `get_current_user` ไม่เคยจาก request body ทำไม ownership ต้องมาจาก token ไม่ใช่จาก client?
 
-## Recap
+## สรุป
 
-`app/routers/exercises.py` คือ resource router ตัวแรกของ FitTrack: `GET /exercises` (สาธารณะ + ของตัวเอง), `POST /exercises` (เจ้าของคือ caller) และ `GET /exercises/{id}` — แต่ละตัวผ่าน auth ด้วย `Depends(get_current_user)` และได้ session จาก `Depends(get_session)` router ยัง **บาง** อยู่ ส่งทุก query ต่อให้ `ExerciseRepo` ซึ่ง `list_visible` เขียนกฎ access ทั้งหมดเป็น `where is_public or created_by = :me` clause เดียว ดังนั้นไม่มีอะไรที่ user เห็นไม่ได้ถูกโหลดเลย exercise ตัวเดียวที่ caller เห็นไม่ได้คืน `404` ไม่ใช่ `403` เพื่อไม่ให้รั่วว่ามันมีอยู่ และ router ถูกต่อสายเข้า `app/main.py` ด้วย `include_router` คุณตรวจสอบมันครบ end to end ด้วย Supabase JWT จริงกับ `curl` ต่อไป [Ownership & validation →](/fittrack/th/exercises/ownership-and-validation/) เพิ่ม `PATCH` กับ `DELETE` — ที่ซึ่ง "คุณเห็นได้แต่แก้ไม่ได้" *คือ* `403` — และวาง Pydantic validation ทับ write path
+`app/routers/exercises.py` คือ resource router ตัวแรกของ FitTrack: `GET /exercises` (สาธารณะ + ของตัวเอง), `POST /exercises` (เจ้าของคือ caller) และ `GET /exercises/{id}` — แต่ละตัวผ่าน auth ด้วย `Depends(get_current_user)` และได้ session จาก `Depends(get_session)` router ยัง **บาง** อยู่ ส่งทุก query ต่อให้ `ExerciseRepo` ซึ่ง `list_visible` เขียนกฎ access ทั้งหมดเป็น `where is_public or created_by = :me` clause เดียว ดังนั้นไม่มีอะไรที่ user เห็นไม่ได้ถูกโหลดเลย exercise ตัวเดียวที่ caller เห็นไม่ได้คืน `404` ไม่ใช่ `403` เพื่อไม่ให้รั่วว่ามีอยู่จริง และ router ต่อสายเข้า `app/main.py` ด้วย `include_router` คุณตรวจสอบครบ end to end ด้วย Supabase JWT จริงกับ `curl` ต่อไป [Ownership & validation →](/fittrack/th/exercises/ownership-and-validation/) เพิ่ม `PATCH` กับ `DELETE` — ที่ซึ่ง "คุณเห็นได้แต่แก้ไม่ได้" *คือ* `403` — และวาง Pydantic validation ทับ write path

@@ -1,17 +1,17 @@
 ---
 title: Overview
-description: "FitTrack คืออะไร, มี feature อะไรบ้าง และแต่ละ build module map ไปยังคอร์สใน Learn Hub ตัวไหนที่มันดัดแปลงมา"
+description: "FitTrack คืออะไร, มี feature อะไรบ้าง และแต่ละ build module map ไปยังคอร์สใน Learn Hub ตัวไหนที่ดัดแปลงมา"
 sidebar:
   order: 1
 ---
 
-## What FitTrack is
+## FitTrack คืออะไร
 
 FitTrack คือ **แอปบันทึกการออกกำลังกาย** user เข้าสู่ระบบ บันทึก workout เป็นชุดของ **set** — แต่ละ set คือ exercise บวกกับจำนวน reps และน้ำหนัก — แล้วดู progress ของตัวเองสะสมขึ้นเรื่อย ๆ: personal record, total volume ต่อสัปดาห์ และ trend ของแต่ละ exercise คอร์สนี้ตั้งใจโฟกัสแคบ ๆ: **exercise catalog**, **workout logging** และ **progress** ไม่มี social feed, ไม่มี training program, ไม่มี nutrition — ของพวกนั้นอยู่ใน [where to go next](/fittrack/th/wrap-up/)
 
 จุดสำคัญของโปรเจกต์ไม่ใช่เรื่อง domain ของ fitness — แต่คือ **การสร้างหนึ่ง product ให้สอง client บน backend เดียวที่แชร์กัน** คุณเขียน **FastAPI** service ตัวเดียว ต่อหลังบ้านด้วย **Supabase** (managed Postgres และ Auth) แล้วเรียกใช้จากทั้งแอป mobile บน **Flutter** (ตัวหลัก ประสบการณ์แบบ mobile-first) และ web companion บน **Svelte** (dashboard ที่เบากว่า) API เดียวกัน แต่ front end สองแบบที่ต่างกันมาก
 
-## The feature set
+## ฟีเจอร์ที่มี
 
 - **Auth** — สมัครและเข้าสู่ระบบผ่าน Supabase Auth; ทุก API call ยืนยันตัวตนด้วย JWT ที่ Supabase ออกให้
 - **Exercise catalog** — library ของ exercise ที่ shared ร่วมกัน บวกกับที่ user สร้างเอง
@@ -20,11 +20,11 @@ FitTrack คือ **แอปบันทึกการออกกำลั�
 - **Progress & stats** — personal record, volume รายสัปดาห์, trend ต่อ exercise คำนวณฝั่ง server
 - **Two clients** — แอป mobile บน Flutter และ web companion บน Svelte ทั้งคู่ต่อกับ FastAPI backend เดียวกัน
 
-## The course map
+## แผนที่คอร์ส
 
 แต่ละ build module ดัดแปลงคอร์สจาก Learn Hub มาใช้กับ FitTrack ทีละส่วน
 
-| Module | What you build | Learn Hub course it adapts |
+| โมดูล | สิ่งที่คุณสร้าง | คอร์สใน Learn Hub ที่อ้างอิง |
 | --- | --- | --- |
 | 1 · Setup & Tooling | Python toolchain (uv), โปรเจกต์ FastAPI และโปรเจกต์ Supabase | Python |
 | 2 · Supabase Foundation | schema, migration ของ Postgres และ Auth บน managed Supabase | Supabase |
@@ -40,7 +40,7 @@ FitTrack คือ **แอปบันทึกการออกกำลั�
 | 12 · Testing | pytest สำหรับ backend, widget test สำหรับ Flutter | Python |
 | 13 · Deployment | containerize API, hosted Supabase, ship ทั้งสอง client | Docker |
 
-## Verify
+## ตรวจสอบผล
 
 คุณพร้อมไปต่อเมื่อตอบคำถามพวกนี้ด้วยคำพูดของตัวเองได้:
 

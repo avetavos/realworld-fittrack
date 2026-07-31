@@ -5,23 +5,23 @@ sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-dashboard — หน้าจอเดียวที่ web companion นี้มีอยู่เพื่อมันจริง ๆ มันอ่าน **workout ล่าสุด** และ **progress** ของ user จาก FastAPI backend แล้วจัดวางให้ดูได้อย่างรวดเร็วบนจอใหญ่ ไม่มี logging ไม่มีการแก้ไข: Flutter app เป็นเจ้าของการเขียน และ web companion เป็นเจ้าของการอ่าน
+dashboard — หน้าจอเดียวที่ web companion นี้มีอยู่เพื่อสิ่งนี้จริง ๆ หน้านี้อ่าน **workout ล่าสุด** และ **progress** ของ user จาก FastAPI backend แล้วจัดวางให้ดูได้อย่างรวดเร็วบนจอใหญ่ ไม่มี logging ไม่มีการแก้ไข: Flutter app เป็นเจ้าของการเขียน และ web companion เป็นเจ้าของการอ่าน
 
-ทุกอย่างขึ้นอยู่กับ session pipeline จาก[บทที่แล้ว](/fittrack/th/svelte-companion/sveltekit-auth/): `hooks.server.ts` verify Supabase JWT เข้า `event.locals.accessToken` ไว้แล้ว ที่นี่เราเขียน backend client เล็ก ๆ ที่แนบ token นั้นเป็น header `Bearer`, เขียน `+page.server.ts` `load` ที่เรียก **`GET /workouts`**, **`GET /progress/records`**, และ **`GET /progress/volume`** แบบขนาน, และ `+page.svelte` ที่ render ผลลัพธ์ backend verify token แบบเดียวกับที่มันทำให้ Flutter เป๊ะ ๆ ดังนั้น web client จึงได้ข้อมูลเดียวกันด้วย auth เดียวกันและไม่มี endpoint ใหม่เลย
+ทุกอย่างขึ้นอยู่กับ session pipeline จาก[บทที่แล้ว](/fittrack/th/svelte-companion/sveltekit-auth/): `hooks.server.ts` verify Supabase JWT เข้า `event.locals.accessToken` ไว้แล้ว ที่นี่เราเขียน backend client เล็ก ๆ ที่แนบ token นั้นเป็น header `Bearer`, เขียน `+page.server.ts` `load` ที่เรียก **`GET /workouts`**, **`GET /progress/records`**, และ **`GET /progress/volume`** แบบขนาน, และ `+page.svelte` ที่ render ผลลัพธ์ backend verify token แบบเดียวกับที่ทำให้ Flutter เป๊ะ ๆ ดังนั้น web client จึงได้ข้อมูลเดียวกันด้วย auth เดียวกันและไม่มี endpoint ใหม่เลย
 
 พอจบบท คุณจะได้ dashboard ที่ทำงานได้จริงอ่านข้อมูลสด ๆ จาก API ที่ใช้ร่วมกัน และเห็นภาพชัดว่า client รองขี่อยู่บน backend ที่สร้างมาเพื่อ client หลักได้อย่างไร นี่คือบทสุดท้ายของ module นี้ จากตรงนี้ course ไปต่อที่ [Testing →](/fittrack/th/testing/)
 
-## Why
+## ทำไม
 
-จุดสำคัญทั้งหมดของ architecture FitTrack คือ **FastAPI เป็นเจ้าของข้อมูลและ client ทั้งสองเรียกมัน** Flutter app ไม่ได้คุยกับ Postgres ตรง ๆ และ dashboard นี้ก็ไม่ได้เช่นกัน — ทั้งคู่ส่ง HTTP request พร้อม Supabase JWT แล้ว FastAPI verify token และรัน query ดังนั้นการสร้าง web dashboard ไม่ใช่ "เพิ่ม web data layer" แต่คือ "เรียก endpoint ที่มีอยู่แล้ว" `GET /workouts` return ประวัติของ user เรียงจากล่าสุดก่อน, `GET /progress/records` return น้ำหนักที่ดีที่สุดต่อ exercise (PR ของเขา), และ `GET /progress/volume` return volume รวมรายสัปดาห์ สามการเรียกนั้นคือทั้ง dashboard
+จุดสำคัญทั้งหมดของ architecture FitTrack คือ **FastAPI เป็นเจ้าของข้อมูลและ client ทั้งสองเรียกใช้** Flutter app ไม่ได้คุยกับ Postgres ตรง ๆ และ dashboard นี้ก็ไม่ได้เช่นกัน — ทั้งคู่ส่ง HTTP request พร้อม Supabase JWT แล้ว FastAPI verify token และรัน query ดังนั้นการสร้าง web dashboard ไม่ใช่ "เพิ่ม web data layer" แต่คือ "เรียก endpoint ที่มีอยู่แล้ว" `GET /workouts` return ประวัติของ user เรียงจากล่าสุดก่อน, `GET /progress/records` return น้ำหนักที่ดีที่สุดต่อ exercise (PR ของเขา), และ `GET /progress/volume` return volume รวมรายสัปดาห์ สามการเรียกนั้นคือทั้ง dashboard
 
-การตัดสินใจเฉพาะ web อย่างเดียวคือ **ที่ไหน** ที่การเรียกเกิดขึ้น ใน SvelteKit `+page.server.ts` `load` รันบน server และนั่นแหละคือที่ที่เราอยากให้ backend call เกิด: JWT อยู่บน `event.locals` (ฝั่ง server), FastAPI base URL ยังเป็น secret ฝั่ง server ล้วนได้, และ browser ได้รับข้อมูลที่เสร็จแล้วแทนที่จะยิง authenticated cross-origin request ของตัวเอง มันยังหมายความว่า token ไม่ต้องถูกส่งให้ client JavaScript เพื่อทำ fetch เลย — server ถือมัน, forward มัน, และ return แค่ข้อมูลที่ render แล้ว สำหรับหน้าที่เน้นอ่าน นี่คือรูปแบบที่ถูกต้องและง่ายที่สุด: load บน server, render บน client
+การตัดสินใจเฉพาะ web อย่างเดียวคือ **ที่ไหน** ที่การเรียกเกิดขึ้น ใน SvelteKit `+page.server.ts` `load` รันบน server และนั่นแหละคือที่ที่เราอยากให้ backend call เกิด: JWT อยู่บน `event.locals` (ฝั่ง server), FastAPI base URL ยังเป็น secret ฝั่ง server ล้วนได้, และ browser ได้รับข้อมูลที่เสร็จแล้วแทนที่จะยิง authenticated cross-origin request ของตัวเอง แปลว่า token ไม่ต้องส่งให้ client JavaScript ไปทำ fetch เลย — server ถือไว้เอง, forward ต่อ, และ return แค่ข้อมูลที่ render แล้ว สำหรับหน้าที่เน้นอ่าน นี่คือรูปแบบที่ถูกต้องและง่ายที่สุด: load บน server, render บน client
 
-เทียบกับ **Flutter primary client** Flutter มี state และ interactive: มันถือ Riverpod store, ให้คุณเริ่ม workout และเพิ่ม set แบบ offline-ish, แล้ว `POST` กลับมา — มันคือที่ที่ข้อมูล *ถูกสร้าง* web companion นี้ตั้งใจให้ตรงข้าม: stateless request/response, แทบไม่มี local store, read-only backend เดียวกัน, auth เดียวกัน, แต่ client ต่างกันมาก การได้เห็นทั้งสองทำให้งานของ backend ชัดเจน — มันคือ single source of truth ที่ทั้งสอง client ไม่ทำซ้ำ และการเพิ่ม client ตัวที่สามก็จะเป็น "แค่เรียก endpoint" อีกครั้ง
+เทียบกับ **Flutter primary client** Flutter มี state และ interactive: ถือ Riverpod store, ให้คุณเริ่ม workout และเพิ่ม set แบบ offline-ish, แล้ว `POST` กลับมา — เป็นที่ที่ข้อมูล *ถูกสร้าง* web companion นี้ตั้งใจให้ตรงข้าม: stateless request/response, แทบไม่มี local store, read-only backend เดียวกัน, auth เดียวกัน, แต่ client ต่างกันมาก การได้เห็นทั้งสองทำให้งานของ backend ชัดเจน — backend คือ single source of truth ที่ทั้งสอง client ไม่ทำซ้ำ และการเพิ่ม client ตัวที่สามก็จะเป็น "แค่เรียก endpoint" อีกครั้ง
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Fetching in `+page.server.ts` (server `load`)** vs. **fetching from the browser in `+page.svelte`**
 
@@ -30,14 +30,14 @@ dashboard — หน้าจอเดียวที่ web companion นี้
 
 **A read-only web companion** vs. **making the web client a second full read/write app**
 
-- **Pros:** การจำกัด web client ไว้ที่การอ่านทำให้มันเล็ก — ไม่มี form, ไม่มี optimistic update, ไม่มี offline write queue — และเลี่ยงไม่ให้สอง client แย่งกันเป็นเจ้าของประสบการณ์ "log a workout" ซึ่ง Flutter app ทำได้ดีกว่าบนมือถือที่ยิม
+- **Pros:** การจำกัด web client ไว้ที่การอ่านทำให้ตัว client เล็ก — ไม่มี form, ไม่มี optimistic update, ไม่มี offline write queue — และเลี่ยงไม่ให้สอง client แย่งกันเป็นเจ้าของประสบการณ์ "log a workout" ซึ่ง Flutter app ทำได้ดีกว่าบนมือถือที่ยิม
 - **Cons:** คุณ log workout จาก laptop ไม่ได้ ซึ่ง user บางคนจะต้องการ นั่นเป็นการตัดสินใจ YAGNI ที่ตั้งใจสำหรับ course นี้: การเขียนเป็นงานของ Flutter และ endpoint (`POST /workouts`) มีอยู่แล้วถ้าคุณตัดสินใจทีหลังว่า web client ควรเขียนได้ด้วย
 
-## Set it up
+## ติดตั้ง
 
-### 1. `web/.env` — the backend URL
+### 1. `web/.env` — backend URL
 
-dashboard ต้องรู้ว่า FastAPI อยู่ที่ไหน เพราะการเรียกเกิดใน server `load` ตัวนี้จึงเป็น **server-only** variable ได้ (ไม่มี prefix `PUBLIC_`), อ่านผ่าน `$env/static/private` — มันไม่เคยไปถึง browser:
+dashboard ต้องรู้ว่า FastAPI อยู่ที่ไหน เพราะการเรียกเกิดใน server `load` ตัวนี้จึงเป็น **server-only** variable ได้ (ไม่มี prefix `PUBLIC_`), อ่านผ่าน `$env/static/private` — ค่านี้ไม่เคยไปถึง browser:
 
 ```bash
 # web/.env (add to the vars from the previous lesson)
@@ -46,7 +46,7 @@ API_URL=http://127.0.0.1:8000
 
 ### 2. `src/lib/server/api.ts`
 
-helper ฝั่ง server เล็ก ๆ ที่เรียก FastAPI พร้อมแนบ Supabase JWT มันอยู่ใต้ `lib/server/` — folder ที่ SvelteKit ปฏิเสธไม่ยอม import เข้า client code ดังนั้น logic การ forward token จึงไม่มีทางรั่วไป browser:
+helper ฝั่ง server เล็ก ๆ ที่เรียก FastAPI พร้อมแนบ Supabase JWT ไฟล์นี้อยู่ใต้ `lib/server/` — folder ที่ SvelteKit ปฏิเสธไม่ยอม import เข้า client code ดังนั้น logic การ forward token จึงไม่มีทางรั่วไป browser:
 
 ```ts
 // src/lib/server/api.ts — call FastAPI with the Supabase JWT as a Bearer token.
@@ -71,7 +71,7 @@ export async function apiGet<T>(
 
 ### 3. `src/routes/+page.server.ts`
 
-`load` ของ dashboard มัน redirect ไป sign-in เมื่อไม่มี session แล้ว fetch workout และ progress endpoint ทั้งสอง **แบบขนาน** แล้ว return มัน `weeks=8` ขอ volume endpoint สำหรับแปดสัปดาห์ล่าสุด:
+`load` ของ dashboard จะ redirect ไป sign-in เมื่อไม่มี session แล้ว fetch workout และ progress endpoint ทั้งสอง **แบบขนาน** ก่อน return ผลลัพธ์ `weeks=8` ขอ volume endpoint สำหรับแปดสัปดาห์ล่าสุด:
 
 ```ts
 // src/routes/+page.server.ts — load recent workouts + progress for the dashboard.
@@ -107,7 +107,7 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
 
 ### 4. `src/routes/+page.svelte`
 
-view ของ dashboard — สาม panel แบบ read-only มัน render อะไรก็ตามที่ `load` return มา ไม่มีการ fetch หรือ state ฝั่ง client:
+view ของ dashboard — สาม panel แบบ read-only render อะไรก็ตามที่ `load` return มา ไม่มีการ fetch หรือ state ฝั่ง client:
 
 ```svelte
 <!-- src/routes/+page.svelte -->
@@ -155,7 +155,7 @@ view ของ dashboard — สาม panel แบบ read-only มัน rende
 </section>
 ```
 
-## Verify
+## ตรวจสอบผล
 
 ให้ทั้งสองฝั่งรันอยู่: FastAPI backend บน `:8000` (`uv run fastapi dev app/main.py` ใน `api/`) และ SvelteKit dev server ตรวจให้แน่ใจว่า user ที่ sign in อยู่มี workout ที่ log ไว้อย่างน้อยหนึ่งอัน — log สักอันจาก Flutter app หรือ `POST /workouts` ตรง ๆ — เพื่อให้ endpoint return ข้อมูลออกมา
 
@@ -199,9 +199,9 @@ svelte-check found 0 errors and 0 warnings
 
 - ทำไม backend call ถึงอยู่ใน `+page.server.ts` แทนที่จะอยู่ใน browser และมีอะไรสองอย่างที่อยู่ฝั่ง server เป็นผลจากนั้น?
 - dashboard เพิ่ม backend endpoint ใหม่ **ศูนย์** อัน นั่นบอกอะไรคุณเกี่ยวกับบทบาทที่ FastAPI เล่นให้ client ทั้งสอง?
-- ทำไมถึงยิงสามการอ่านด้วย `Promise.all` แทนที่จะ `await` ทีละอันตามลำดับ และเมื่อไหร่ที่มันจะ *ไม่* ช่วย?
-- companion นี้เป็น read-only ในขณะที่ Flutter app อ่านและเขียน คุณจะหยิบ client ตัวไหนมา log workout ที่ยิม และทำไมนั่นถึงเป็นการแบ่งงานที่ถูกต้อง?
+- ทำไมถึงยิงสามการอ่านด้วย `Promise.all` แทนที่จะ `await` ทีละอันตามลำดับ และเมื่อไหร่ที่วิธีนี้จะ *ไม่* ช่วย?
+- companion นี้เป็น read-only ส่วน Flutter app อ่านและเขียน คุณจะหยิบ client ตัวไหนมา log workout ที่ยิม และทำไมนั่นถึงเป็นการแบ่งงานที่ถูกต้อง?
 
-## Recap
+## สรุป
 
 dashboard อ่าน **FastAPI backend ตัวเดียวกัน** กับที่ Flutter app ใช้ authenticated ด้วย **Supabase JWT ตัวเดียวกัน** helper ฝั่ง server ล้วน (`src/lib/server/api.ts`) แนบ `locals.accessToken` เป็น header `Bearer`; `+page.server.ts` redirect ผู้เยี่ยมชมที่ยังไม่ authenticated แล้วเรียก `GET /workouts`, `GET /progress/records`, และ `GET /progress/volume?weeks=8` แบบขนาน; และ `+page.svelte` render workout ล่าสุดและ progress โดยไม่มี state ฝั่ง client ความต่างนั้นคือบทเรียน: Flutter app เป็น client **หลัก** ที่มี state, เป็นมิตรกับ offline, อ่าน/เขียนได้ และนี่คือ **companion** ที่ stateless, read-only — สอง front end ที่ต่างกันมากบน backend เดียวที่ทั้งคู่ไม่ทำซ้ำ นั่นจบ module Svelte Web Companion ต่อไป [Testing →](/fittrack/th/testing/) ครอบคลุม pytest สำหรับ backend และ widget test สำหรับ Flutter client

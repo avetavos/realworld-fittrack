@@ -5,20 +5,20 @@ sidebar:
   order: 2
 ---
 
-## What we're building
+## สิ่งที่จะสร้าง
 
-ขั้นทางเทคนิคขั้นสุดท้าย: ทุกอย่างที่เคยรันบน laptop ของคุณตอนนี้รันบน cloud ใน [Containerize the API →](/fittrack/th/deployment/containerize-the-api/) คุณเปลี่ยน `api/` ให้เป็น image ที่ deploy ได้ ตรงนี้คุณชี้มันไปที่ **Supabase project แบบ hosted** แทน stack ในเครื่อง, deploy image ขึ้น host จริง, แล้ว ship client ทั้งสองให้ยิงมาที่ backend สาธารณะตัวนั้น
+ขั้นทางเทคนิคขั้นสุดท้าย: ทุกอย่างที่เคยรันบน laptop ของคุณตอนนี้รันบน cloud ใน [Containerize the API →](/fittrack/th/deployment/containerize-the-api/) คุณเปลี่ยน `api/` ให้เป็น image ที่ deploy ได้ ตรงนี้คุณชี้ image นั้นไปที่ **Supabase project แบบ hosted** แทน stack ในเครื่อง, deploy image ขึ้น host จริง, แล้ว ship client ทั้งสองให้ยิงมาที่ backend สาธารณะตัวนั้น
 
 สี่ move ตามลำดับ:
 
 1. **Link the hosted Supabase project** แล้ว `supabase db push` — apply migration ที่คุณเขียนใน [Schema & migrations →](/fittrack/th/supabase/schema-and-migrations/) และ [Auth & RLS →](/fittrack/th/supabase/auth-and-rls/) ลง production database
-2. **Deploy the API container** ขึ้น Fly.io โดยป้อน `DATABASE_URL` กับ `SUPABASE_JWT_SECRET` แบบ hosted ให้มันเป็น secrets
+2. **Deploy the API container** ขึ้น Fly.io โดยป้อน `DATABASE_URL` กับ `SUPABASE_JWT_SECRET` แบบ hosted เข้าไปเป็น secrets
 3. **Ship the Flutter app** เป็น release build ที่ชี้ไปที่ API ที่ deploy แล้ว
 4. **Deploy the SvelteKit companion** ด้วย Node adapter ยิงมาที่ API สาธารณะตัวเดียวกัน
 
 ตอนจบ `curl https://fittrack-api.fly.dev/health` ตอบจาก cloud และการ sign-in บน client ตัวไหนก็ตามไหลผ่าน Supabase Auth แบบ hosted เข้า FastAPI ที่ deploy แล้วของคุณเข้า Postgres แบบ hosted — architecture ตัวเดียวกับใน [introduction →](/fittrack/th/introduction/architecture/) เป๊ะ ตอนนี้ live แล้ว นี่คือ build module สุดท้าย [the wrap-up →](/fittrack/th/wrap-up/) จะย้อนมองสิ่งที่คุณสร้าง
 
-## Why
+## ทำไม
 
 ประเด็นทั้งหมดของ [FastAPI-as-the-gate architecture](/fittrack/th/introduction/architecture/) คือ **มีแค่ deployment target ที่เปลี่ยน** ในขั้นนี้ ไม่ใช่รูปร่างของระบบ Local development รัน FastAPI ตัวเดิมยิงไปที่ local Supabase ที่ CLI เริ่มให้ ส่วน production รัน FastAPI ตัวเดิมยิงไปที่ Supabase แบบ hosted โค้ดเหมือนกันเป๊ะ — สิ่งที่ต่างคือ environment สามค่า (`DATABASE_URL`, `SUPABASE_JWT_SECRET`, `SUPABASE_URL`) ที่คุณไม่เคย hardcode ไว้ตั้งแต่แรก precisely เพื่อให้วันนี้เป็นแค่การเปลี่ยน config ไม่ใช่การเขียนใหม่
 
@@ -28,11 +28,11 @@ Migration คือเหตุผลที่ database ถูกสร้าง
 
 และ client สองตัว ship ต่างกันด้วยเหตุผลจริง: **Flutter compile เป็น native binaries** ที่คุณ distribute ผ่าน app store (หรือ release build สำหรับติดตั้งตรง) ส่วน **SvelteKit companion เป็น web app** ที่คุณเสิร์ฟจาก Node process หลัง URL backend เดียวกัน สอง distribution channel — tradeoff ที่คุณรับมาตั้งแต่ [รองรับ app ที่ mobile เป็นหลักกับ web companion](/fittrack/th/introduction/architecture/)
 
-## Pros & cons
+## ข้อดีข้อเสีย
 
 **Fly.io for the API** vs. **Render (or another PaaS)**
 
-- **Pros of Fly.io:** มัน deploy Docker image ของคุณตรง ๆ, `fly launch` สร้าง `fly.toml` ที่ใช้ได้จาก `Dockerfile` ที่คุณมีอยู่แล้ว, secrets กับ public HTTPS URL อย่างละ command เดียว, และมันรันใกล้ Supabase region ของคุณเพื่อให้ DB latency ต่ำ
+- **Pros of Fly.io:** deploy Docker image ของคุณได้ตรง ๆ, `fly launch` สร้าง `fly.toml` ที่ใช้ได้จาก `Dockerfile` ที่คุณมีอยู่แล้ว, secrets กับ public HTTPS URL อย่างละ command เดียว, และรันใกล้ Supabase region ของคุณเพื่อให้ DB latency ต่ำ
 - **Cons / when Render instead:** Render ให้ Docker deploy ที่ง่ายพอ ๆ กันด้วย workflow แบบ Git-push และ managed-Postgres ที่ใจกว้างถ้าคุณ *ไม่ได้* ใช้ Supabase; `render.yaml` ที่เทียบเท่า `fly.toml` ก็สั้นพอกัน ทั้งคู่เป็นตัวเลือกที่ดี — บทนี้แสดง Fly.io แบบเป็นรูปธรรม; รูปร่าง (build image → set secrets → deploy → get a URL) เหมือนกันบน Render
 
 **Injecting config as host secrets** vs. **committing a production `.env`**
@@ -40,11 +40,11 @@ Migration คือเหตุผลที่ database ถูกสร้าง
 - **Pros of host secrets:** credential อยู่ใน secret store ของ platform ไม่เคยอยู่ใน git หรือ image; หมุน JWT secret ก็แค่ `fly secrets set` โดยไม่ต้อง rebuild
 - **Cons:** มีที่ต้องไปดูเพิ่มอีกที่หนึ่งเวลาอะไร misconfig และคุณ `grep` ไฟล์เพื่อดูว่าตั้งอะไรไว้ไม่ได้ (ต้อง query platform) คุ้ม — production secret ที่ commit ไว้คือ breach ที่รอวันเกิด
 
-## Set it up
+## ติดตั้ง
 
-### 1. Link the hosted project and push migrations
+### 1. link hosted project แล้ว push migration
 
-สร้าง project ใน [Supabase dashboard](https://supabase.com/dashboard) แล้ว link local repo ของคุณเข้ากับมันและ push migration รันคำสั่งเหล่านี้จาก `api/` (หรือที่ไหนก็ตามที่ directory `supabase/` ของคุณอยู่):
+สร้าง project ใน [Supabase dashboard](https://supabase.com/dashboard) แล้ว link local repo เข้ากับ project นั้นและ push migration รันคำสั่งเหล่านี้จาก `api/` (หรือที่ไหนก็ตามที่ directory `supabase/` ของคุณอยู่):
 
 ```bash
 # Log in once, then link this repo to the hosted project by its ref
@@ -64,7 +64,7 @@ Finished supabase db push.
 
 ตอนนี้ database แบบ hosted มีสี่ตารางและ RLS policies จาก Module 2 — ตัวเดิม จากไฟล์เดิม ที่คุณทดสอบในเครื่อง
 
-### 2. Deploy the API to Fly.io
+### 2. deploy API ขึ้น Fly.io
 
 จาก `api/` สร้าง app config โดยยังไม่ deploy Fly detect `Dockerfile` จากบทที่แล้วแล้วเขียน `fly.toml`:
 
@@ -96,7 +96,7 @@ primary_region = "sin"   # pick a region near your Supabase project
     timeout = "2s"
 ```
 
-ทีนี้ set production secrets ค่ามาจาก Supabase dashboard: **Project Settings → Database** ให้ connection string, และ **Project Settings → API → JWT Secret** ให้ signing secret ที่ [`get_current_user` dependency](/fittrack/th/auth/verify-the-jwt/) ของคุณ verify กับมัน สลับ driver เป็น `postgresql+asyncpg` (สิ่งที่ SQLAlchemy คาดหวังจาก [Async database →](/fittrack/th/fastapi/async-database/)) และใช้ connection pooler host เพื่อ deploy ที่เป็นมิตรกับ serverless:
+ทีนี้ set production secrets ค่ามาจาก Supabase dashboard: **Project Settings → Database** ให้ connection string, และ **Project Settings → API → JWT Secret** ให้ signing secret ที่ [`get_current_user` dependency](/fittrack/th/auth/verify-the-jwt/) ของคุณใช้ verify สลับ driver เป็น `postgresql+asyncpg` (สิ่งที่ SQLAlchemy คาดหวังจาก [Async database →](/fittrack/th/fastapi/async-database/)) และใช้ connection pooler host เพื่อ deploy ที่เป็นมิตรกับ serverless:
 
 ```bash
 fly secrets set \
@@ -113,9 +113,9 @@ fly deploy
 
 Fly build image (หรือคุณจะ `fly deploy --local-only` เพื่อ reuse ตัวที่ build ไว้บทที่แล้ว), boot machine, รอให้ `/health` ผ่าน, แล้วส่ง public URL ให้คุณ: `https://fittrack-api.fly.dev`
 
-### 3. Ship the Flutter release build
+### 3. ship Flutter release build
 
-ชี้ app ไปที่ API ที่ deploy แล้ว API base URL เป็น compile-time constant ใน [the Flutter API client](/fittrack/th/flutter-foundation/api-client/) — ส่งมันด้วย `--dart-define` เพื่อให้ release build ยิงไป production โดยไม่ต้องแก้ source:
+ชี้ app ไปที่ API ที่ deploy แล้ว API base URL เป็น compile-time constant ใน [the Flutter API client](/fittrack/th/flutter-foundation/api-client/) — ส่งค่าด้วย `--dart-define` เพื่อให้ release build ยิงไป production โดยไม่ต้องแก้ source:
 
 ```bash
 cd mobile
@@ -131,7 +131,7 @@ flutter build apk --release \
 
 APK นั้นเป็น release build ที่ distribute ได้ (ใช้ `flutter build ipa` สำหรับ iOS / App Store) `SUPABASE_ANON_KEY` เป็น key *สาธารณะ* — ปลอดภัยบน client ตามที่ออกแบบไว้ใน Module 1 — และทุก API call ยังพก Supabase JWT ของ user ไปหา FastAPI ของคุณ
 
-### 4. Deploy the SvelteKit companion
+### 4. deploy SvelteKit companion
 
 Web companion จาก [the dashboard lesson →](/fittrack/th/svelte-companion/dashboard/) ต้องการ adapter เพื่อรันเป็น server จริง ใช้ Node adapter:
 
@@ -151,7 +151,7 @@ export default {
 };
 ```
 
-Build มัน โดยให้ endpoint สาธารณะเดียวกันเป็น environment variable (SvelteKit อ่าน var ที่ขึ้นต้นด้วย `PUBLIC_` บน client — pattern จาก Module 11):
+Build ฝั่ง web โดยให้ endpoint สาธารณะเดียวกันเป็น environment variable (SvelteKit อ่าน var ที่ขึ้นต้นด้วย `PUBLIC_` บน client — pattern จาก Module 11):
 
 ```bash
 PUBLIC_API_BASE_URL=https://fittrack-api.fly.dev \
@@ -162,9 +162,9 @@ PUBLIC_SUPABASE_ANON_KEY=<your-anon-key> \
 node build   # serves the companion on port 3000
 ```
 
-เสิร์ฟ `web/build` จาก Node host ตัวไหนก็ได้ (Fly.io, Render, VM) มัน sign user เข้าด้วย `supabase-js` และอ่านข้อมูลของพวกเขาผ่าน FastAPI ที่ deploy แล้วตัวเดียวกับที่ mobile app ใช้ — backend เดียว, client สองตัว, ตามที่สัญญาไว้เป๊ะ
+เสิร์ฟ `web/build` จาก Node host ตัวไหนก็ได้ (Fly.io, Render, VM) ตัว web sign user เข้าด้วย `supabase-js` และอ่านข้อมูลของพวกเขาผ่าน FastAPI ที่ deploy แล้วตัวเดียวกับที่ mobile app ใช้ — backend เดียว, client สองตัว, ตามที่สัญญาไว้เป๊ะ
 
-## Verify
+## ตรวจสอบผล
 
 ก่อนอื่น พิสูจน์ว่า API ที่ deploy แล้วทำงานและเข้าถึงได้ผ่าน HTTPS:
 
@@ -186,7 +186,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://fittrack-api.fly.dev/me
 401
 ```
 
-แล้ว sign in บน client ตัวไหนก็ได้ (หรือ fetch token จาก Supabase Auth แบบ hosted) แล้วเรียก `/me` ด้วยมัน:
+แล้ว sign in บน client ตัวไหนก็ได้ (หรือ fetch token จาก Supabase Auth แบบ hosted) แล้วเรียก `/me` ด้วย token นั้น:
 
 ```bash
 curl -s https://fittrack-api.fly.dev/me \
@@ -206,6 +206,6 @@ curl -s https://fittrack-api.fly.dev/me \
 - `SUPABASE_ANON_KEY` ship อยู่ใน Flutter และ Svelte build แต่ `SUPABASE_JWT_SECRET` อยู่แค่เป็น Fly.io secret บน API เท่านั้น ทำไมการแยกแบบนั้นถึงถูกต้อง?
 - `fly.toml` ของ Fly.io ตั้ง `internal_port = 8000` และ health-check `/health` สองสิ่งไหนจากสองบทที่แล้วที่ค่าเหล่านั้นต้องตรงกัน?
 
-## Recap
+## สรุป
 
 FitTrack live แล้ว คุณ **linked the hosted Supabase project** แล้ว `supabase db push` migration จาก Module 2 ขึ้นไป schema และ RLS ของ production จึงเป็นตัวที่คุณทดสอบในเครื่อง คุณ **deployed the API container** จากบทที่แล้วขึ้น Fly.io ด้วย `fly.toml` สั้น ๆ โดย inject `DATABASE_URL`, `SUPABASE_JWT_SECRET`, และ `SUPABASE_URL` แบบ hosted เป็น platform secrets — ไม่เคย bake เข้า image คุณ **shipped a Flutter release build** ด้วย `--dart-define` ที่ชี้ไป API สาธารณะ, และ **deployed the SvelteKit companion** ด้วย Node adapter ยิงมาที่ backend เดียวกัน `curl /health` ตอบจาก cloud, `/me` คืน `401` เมื่อ anonymous และ profile ของคุณเมื่อมี JWT จริง, และ workout ที่ log บนโทรศัพท์โผล่บน web — FastAPI backend เดียว, client สองตัว, Supabase แบบ hosted อยู่เบื้องหลัง นั่นจบส่วน build ต่อไป [the wrap-up →](/fittrack/th/wrap-up/) จะตาม logged set หนึ่งตัวไปทั่วทั้งระบบ, วางการตัดสินใจที่คุณ defend ได้แล้ว, และชี้ว่า FitTrack ไปทางไหนต่อจากนี้
