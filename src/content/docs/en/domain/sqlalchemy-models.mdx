@@ -1,6 +1,6 @@
 ---
 title: SQLAlchemy models
-description: "app/models/ — a Base(DeclarativeBase) and the four SQLAlchemy 2.0 models (Profile, Exercise, Workout, WorkoutSet) written with Mapped/mapped_column and typed relationships, mirroring the Supabase migration column for column. Why the models restate a schema the database already owns, why annotations alone imply nullability, and how relationship() plus cascade let you build a workout and its sets as one object graph. Verified by importing the metadata and seeing the four table names register."
+description: "app/models/ — a Base(DeclarativeBase) and the four SQLAlchemy 2.0 models (Profile, Exercise, Workout, WorkoutSet) written with Mapped/mapped_column and typed relationships, mirroring the Supabase migration column for column. Why the models restate a schema the database already owns, why annotations alone imply nullability, what PEP 649 deferred annotations change for the quoted relationship types, and how relationship() plus cascade let you build a workout and its sets as one object graph. Verified by importing the metadata and seeing the four table names register."
 sidebar:
   order: 1
 ---
@@ -218,6 +218,14 @@ from app.models.workout_set import WorkoutSet
 
 __all__ = ["Base", "Profile", "Exercise", "Workout", "WorkoutSet"]
 ```
+
+### A note on those quoted annotations
+
+Every relationship above is written as a string — `Mapped["Profile | None"]` — with the real class imported only under `if TYPE_CHECKING:`. That pairing exists because `exercise.py` and `profile.py` refer to each other: importing both eagerly is a circular import, so the type checker gets the import and the interpreter gets a string.
+
+Python 3.14 changes half of that story. Under [PEP 649](https://peps.python.org/pep-0649/) annotations are no longer evaluated when the class body runs — they're stored as a function and computed only when something asks for them (the new `annotationlib` module is the supported way to ask). So a bare `Mapped[Profile | None]` no longer raises `NameError` at import time, and `from __future__ import annotations` has nothing left to do.
+
+What does *not* change: SQLAlchemy still has to resolve `Profile` to the real class when it configures the mappers, and Pydantic does the same when it builds a model. Lazily evaluated is not never evaluated — the name must be importable by the time resolution happens, which is exactly what step 6 guarantees. Keep the quoted form here: it costs nothing, it works on 3.12 too, and the `__init__.py` above is what actually makes it resolve.
 
 ## Verify
 

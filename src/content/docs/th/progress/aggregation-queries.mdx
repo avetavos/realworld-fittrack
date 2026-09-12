@@ -1,6 +1,6 @@
 ---
 title: Aggregation queries
-description: "SQL ที่เปลี่ยน set ที่ log ไว้ให้เป็นข้อมูลเชิงลึก — คำนวณใน database ไม่ใช่ใน Python personal record ผ่าน Postgres DISTINCT ON (set ที่หนักที่สุดต่อ exercise พร้อม reps และวันที่ที่ทำได้) และ weekly volume ผ่าน date_trunc + sum(reps * weight_kg) เหนือ window ที่มีขอบเขต ทำไมต้อง aggregate ใน SQL, ทำไม DISTINCT ON ถึงชนะ GROUP BY subquery สำหรับ best-row-per-group และ ProgressRepo เขียนแต่ละอันด้วย SQLAlchemy 2.0 select() อย่างไร ตรวจสอบด้วยการรัน query กับ local Supabase Postgres ด้วย psql"
+description: "SQL ที่เปลี่ยน set ที่ log ไว้ให้เป็นข้อมูลเชิงลึก — คำนวณใน database ไม่ใช่ใน Python personal record ผ่าน Postgres DISTINCT ON (set ที่หนักที่สุดต่อ exercise พร้อม reps และวันที่ที่ทำได้) และ weekly volume ผ่าน date_trunc + sum(reps * weight_kg) เหนือ window ที่มีขอบเขต ทำไมต้อง aggregate ใน SQL, ทำไม DISTINCT ON ถึงชนะ GROUP BY subquery สำหรับ best-row-per-group, ทำไม bound parameter (ไม่ใช่ f-string และในอนาคตคือ t-string) คือสิ่งที่ทำให้ SQL ปลอดภัย และ ProgressRepo เขียนแต่ละอันด้วย SQLAlchemy 2.0 select() อย่างไร ตรวจสอบด้วยการรัน query กับ local Supabase Postgres ด้วย psql"
 sidebar:
   order: 1
 ---
@@ -137,6 +137,23 @@ where w.user_id = :user_id
 group by week_start
 order by week_start;
 ```
+
+### ทำไมต้อง `:user_id` ไม่ใช่ f-string
+
+สังเกตสิ่งที่ SQLAlchemy สร้างออกมา: `where w.user_id = :user_id` ไม่ใช่ตัว uuid จริง ๆ ค่าถูกส่งไปหา Postgres แยกจากตัว query text มันจึงไม่มีทางถูก parse เป็น SQL ได้เลย นั่นคือเกราะป้องกัน injection ทั้งหมด และเป็นเหตุผลที่คอร์สนี้สร้าง query ด้วย `select()` พร้อม bound parameter เท่านั้น วินาทีที่เอาค่าจากผู้ใช้ไปแปะในสตริง — `f"where w.user_id = '{user_id}'"` — ค่านั้นจะกลายเป็นคนกำหนดเองว่า query จบตรงไหน
+
+Python 3.14 เพิ่ม primitive ระดับภาษามาเพื่อเรื่องนี้โดยเฉพาะ: **t-string** ([PEP 750](https://peps.python.org/pep-0750/)) literal `t"..."` หน้าตาเหมือน f-string แต่ผลลัพธ์เป็น `Template` ที่เก็บข้อความคงที่กับค่าที่ interpolate เข้ามาแยกชิ้นกันไว้ แทนที่จะยุบรวมเป็นสตริงเดียว:
+
+```python
+from string.templatelib import Template
+
+user_id = "b1e7...'; drop table workouts; --"
+query: Template = t"where w.user_id = {user_id}"
+# template รู้ว่า "where w.user_id = " คือ SQL ส่วน user_id คือค่า
+# ถ้าเป็น f-string ตอนนี้คือส่งการโจมตีให้ database ไปเรียบร้อยแล้ว
+```
+
+library จึงสามารถ bind แต่ละ interpolation เป็น parameter ได้ — ปลอดภัยโดยโครงสร้าง ไม่ต้องอาศัยวินัยแบบที่ f-string เรียกร้องจากคุณ เรื่องนี้ควรรู้ไว้ แต่ยังไม่เปลี่ยนอะไรใน FitTrack ตอนนี้: ยังไม่มี database driver ตัวไหนรับ `Template` และ `select()` ของ SQLAlchemy ก็ให้การรับประกันแบบเดียวกันอยู่แล้ว สร้าง query ตามที่บทนี้ทำต่อไปได้เลย
 
 ## ตรวจสอบผล
 

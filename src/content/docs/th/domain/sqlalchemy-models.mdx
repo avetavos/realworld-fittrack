@@ -1,6 +1,6 @@
 ---
 title: SQLAlchemy models
-description: "app/models/ — Base(DeclarativeBase) และสี่ SQLAlchemy 2.0 model (Profile, Exercise, Workout, WorkoutSet) เขียนด้วย Mapped/mapped_column และ typed relationship สะท้อน Supabase migration แบบ column ต่อ column ทำไม model ถึงเขียนซ้ำ schema ที่ database เป็นเจ้าของอยู่แล้ว ทำไม annotation อย่างเดียวก็บอก nullability และ relationship() บวก cascade ทำให้คุณสร้าง workout พร้อม set เป็น object graph เดียวได้ยังไง ตรวจสอบด้วยการ import metadata แล้วดูชื่อ table ทั้งสี่ register"
+description: "app/models/ — Base(DeclarativeBase) และสี่ SQLAlchemy 2.0 model (Profile, Exercise, Workout, WorkoutSet) เขียนด้วย Mapped/mapped_column และ typed relationship สะท้อน Supabase migration แบบ column ต่อ column ทำไม model ถึงเขียนซ้ำ schema ที่ database เป็นเจ้าของอยู่แล้ว ทำไม annotation อย่างเดียวก็บอก nullability, deferred annotation ของ PEP 649 เปลี่ยนอะไรกับ relationship type ที่ใส่เครื่องหมายคำพูดไว้ และ relationship() บวก cascade ทำให้คุณสร้าง workout พร้อม set เป็น object graph เดียวได้ยังไง ตรวจสอบด้วยการ import metadata แล้วดูชื่อ table ทั้งสี่ register"
 sidebar:
   order: 1
 ---
@@ -218,6 +218,14 @@ from app.models.workout_set import WorkoutSet
 
 __all__ = ["Base", "Profile", "Exercise", "Workout", "WorkoutSet"]
 ```
+
+### เรื่องของ annotation ที่ใส่ไว้ในเครื่องหมายคำพูด
+
+relationship ทุกตัวข้างบนเขียนเป็น string — `Mapped["Profile | None"]` — โดย import class จริงไว้ใต้ `if TYPE_CHECKING:` เท่านั้น ที่ต้องจับคู่กันแบบนี้เพราะ `exercise.py` กับ `profile.py` อ้างถึงกันและกัน ถ้า import ตรง ๆ ทั้งคู่ก็จะเป็น circular import type checker เลยได้ import ส่วน interpreter ได้ string ไป
+
+Python 3.14 เปลี่ยนเรื่องนี้ไปครึ่งหนึ่ง ตาม [PEP 649](https://peps.python.org/pep-0649/) annotation จะไม่ถูก evaluate ตอนที่ class body ทำงานแล้ว แต่ถูกเก็บเป็น function และคำนวณเมื่อมีคนถามเท่านั้น (module `annotationlib` ตัวใหม่คือวิธีถามที่รองรับอย่างเป็นทางการ) ดังนั้น `Mapped[Profile | None]` แบบไม่มีเครื่องหมายคำพูดจะไม่โยน `NameError` ตอน import อีกต่อไป และ `from __future__ import annotations` ก็หมดหน้าที่ไป
+
+สิ่งที่ *ไม่* เปลี่ยน: SQLAlchemy ยังต้อง resolve `Profile` ให้เป็น class จริงตอน configure mapper และ Pydantic ก็ทำแบบเดียวกันตอน build model — evaluate แบบ lazy ไม่ได้แปลว่าไม่ evaluate เลย ชื่อนั้นต้อง import ได้ ณ เวลาที่ resolve ซึ่งก็คือสิ่งที่ขั้นที่ 6 รับประกันให้ เพราะฉะนั้นคงรูปแบบ string ไว้ตรงนี้ดีกว่า: ไม่เสียอะไร ใช้ได้กับ 3.12 ด้วย และ `__init__.py` ข้างบนคือตัวที่ทำให้มัน resolve ได้จริง
 
 ## ตรวจสอบผล
 

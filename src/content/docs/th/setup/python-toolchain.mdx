@@ -1,6 +1,6 @@
 ---
 title: The Python toolchain
-description: "api/ — โปรเจกต์ FastAPI backend ที่จัดการครบวงจรด้วย uv: pyproject.toml, fastapi[standard] เป็น dependency ตัวเดียวที่สำคัญ, package app/ พร้อม health endpoint, และ `uv run fastapi dev` สำหรับรัน ทำไม uv ถึงแทน pip + venv + pip-tools และทำไม app ถึงเป็น package ไม่ใช่ script ตรวจสอบด้วยการยิง /health แล้วได้ {\"status\":\"ok\"}"
+description: "api/ — โปรเจกต์ FastAPI backend ที่จัดการครบวงจรด้วย uv บน Python 3.14: pyproject.toml, fastapi[standard] เป็น dependency ตัวเดียวที่สำคัญ, package app/ พร้อม health endpoint, และ `uv run fastapi dev` สำหรับรัน ทำไม uv ถึงแทน pip + venv + pip-tools และทำไม app ถึงเป็น package ไม่ใช่ script ตรวจสอบด้วยการยิง /health แล้วได้ {\"status\":\"ok\"}"
 sidebar:
   order: 1
 ---
@@ -55,8 +55,16 @@ cd api
 `uv init --package` scaffold `pyproject.toml` กับ package layout แบบไม่มี `src` pin เวอร์ชัน Python ที่ FitTrack ใช้เป็นเป้า:
 
 ```bash
-uv python pin 3.12
+uv python pin 3.14
 ```
+
+ถ้าเครื่องยังไม่มี interpreter ตัวนั้น `uv` ดาวน์โหลดมาให้เอง ไม่ต้องพึ่ง `pyenv` หรือ package manager ของระบบ:
+
+```bash
+uv python install 3.14
+```
+
+การ pin จะเขียนไฟล์ `.python-version` ไว้ และทุกครั้งที่ `uv run` / `uv sync` ต่อจากนี้ก็จะยึดตามนั้น เพื่อนร่วมทีมที่ clone repo ไปจึงได้ interpreter ตัวเดียวกับคุณ FitTrack เล็งไปที่ **Python 3.14** (เป็นเวอร์ชันปัจจุบันตั้งแต่ตุลาคม 2025) โค้ด backend ในคอร์สนี้รันบน 3.12+ ได้ แต่บางเรื่องที่จะพูดถึงระหว่างทาง — annotation ที่ไม่ถูก evaluate ทันที, `except A, B:` ที่ไม่ต้องใส่วงเล็บ — เป็นพฤติกรรมของ 3.14
 
 ### 3. เพิ่ม FastAPI
 
@@ -70,9 +78,9 @@ uv add "fastapi[standard]"
 [project]
 name = "api"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
-    "fastapi[standard]>=0.115",
+    "fastapi[standard]>=0.141",
 ]
 ```
 
@@ -142,4 +150,4 @@ rm -rf .venv && uv sync
 
 ## สรุป
 
-`api/` คือโปรเจกต์ FastAPI ที่จัดการด้วย `uv`: `uv init --package` scaffold โปรเจกต์, `uv python pin 3.12` ตรึง interpreter และ `uv add "fastapi[standard]"` ติดตั้ง FastAPI พร้อม Uvicorn, `fastapi` CLI และ test client — บันทึกทุกอย่างไว้ใน `pyproject.toml` กับ `uv.lock` app เป็น package `app/` ตั้งแต่ต้น โดย `app/main.py` เก็บแค่ instance `FastAPI()` กับ `/health` endpoint เหลือที่ว่างไว้ให้ config, database, auth และ router ที่ module ถัดไปจะเพิ่ม `uv run fastapi dev app/main.py` เสิร์ฟพร้อม hot reload, `curl /health` คืน `{"status":"ok"}` และ `/docs` ที่ generate อัตโนมัติก็ลิสต์ route ไว้แล้ว — ทั้งหมด reproduce จากศูนย์ได้ด้วย `uv sync` ต่อไป [The repo layout →](/fittrack/th/setup/repo-layout/) เอาโปรเจกต์ `api/` นี้ไปวางใน FitTrack repo แบบเต็ม เคียงข้างกับ Flutter และ Svelte client ที่จะเรียกใช้
+`api/` คือโปรเจกต์ FastAPI ที่จัดการด้วย `uv`: `uv init --package` scaffold โปรเจกต์, `uv python pin 3.14` ตรึง interpreter และ `uv add "fastapi[standard]"` ติดตั้ง FastAPI พร้อม Uvicorn, `fastapi` CLI และ test client — บันทึกทุกอย่างไว้ใน `pyproject.toml` กับ `uv.lock` app เป็น package `app/` ตั้งแต่ต้น โดย `app/main.py` เก็บแค่ instance `FastAPI()` กับ `/health` endpoint เหลือที่ว่างไว้ให้ config, database, auth และ router ที่ module ถัดไปจะเพิ่ม `uv run fastapi dev app/main.py` เสิร์ฟพร้อม hot reload, `curl /health` คืน `{"status":"ok"}` และ `/docs` ที่ generate อัตโนมัติก็ลิสต์ route ไว้แล้ว — ทั้งหมด reproduce จากศูนย์ได้ด้วย `uv sync` ต่อไป [The repo layout →](/fittrack/th/setup/repo-layout/) เอาโปรเจกต์ `api/` นี้ไปวางใน FitTrack repo แบบเต็ม เคียงข้างกับ Flutter และ Svelte client ที่จะเรียกใช้

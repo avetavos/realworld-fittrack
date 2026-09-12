@@ -1,6 +1,6 @@
 ---
 title: The Python toolchain
-description: "api/ — the FastAPI backend project, managed end to end by uv: a pyproject.toml, fastapi[standard] as the one dependency that matters, an app/ package with a health endpoint, and `uv run fastapi dev` to run it. Why uv replaces pip + venv + pip-tools, and why the app is a package, not a script. Verified by hitting /health and getting {\"status\":\"ok\"}."
+description: "api/ — the FastAPI backend project, managed end to end by uv on Python 3.14: a pyproject.toml, fastapi[standard] as the one dependency that matters, an app/ package with a health endpoint, and `uv run fastapi dev` to run it. Why uv replaces pip + venv + pip-tools, and why the app is a package, not a script. Verified by hitting /health and getting {\"status\":\"ok\"}."
 sidebar:
   order: 1
 ---
@@ -55,8 +55,16 @@ cd api
 `uv init --package` scaffolds a `pyproject.toml` and a `src`-less package layout. Pin the Python version FitTrack targets:
 
 ```bash
-uv python pin 3.12
+uv python pin 3.14
 ```
+
+If that interpreter isn't on the machine, `uv` fetches it for you — no `pyenv`, no system package manager:
+
+```bash
+uv python install 3.14
+```
+
+The pin writes a `.python-version` file, and every later `uv run` / `uv sync` honours it, so a teammate who clones the repo gets the same interpreter as you. FitTrack targets **Python 3.14** (current since October 2025); the backend code here runs on 3.12+, but a few things the guide points out along the way — annotations that are no longer evaluated eagerly, `except A, B:` without parentheses — are 3.14 behaviour.
 
 ### 3. Add FastAPI
 
@@ -70,9 +78,9 @@ This writes the dependency into `pyproject.toml`, creates `uv.lock`, and install
 [project]
 name = "api"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
-    "fastapi[standard]>=0.115",
+    "fastapi[standard]>=0.141",
 ]
 ```
 
@@ -142,4 +150,4 @@ Check your understanding:
 
 ## Recap
 
-`api/` is a `uv`-managed FastAPI project: `uv init --package` scaffolded it, `uv python pin 3.12` fixed the interpreter, and `uv add "fastapi[standard]"` installed FastAPI plus Uvicorn, the `fastapi` CLI, and the test client — recording everything in `pyproject.toml` and `uv.lock`. The app is an `app/` **package** from the start, with `app/main.py` holding only the `FastAPI()` instance and a `/health` endpoint, leaving room for the config, database, auth, and routers later modules add. `uv run fastapi dev app/main.py` served it with hot reload, `curl /health` returned `{"status":"ok"}`, and the auto-generated `/docs` already listed the route — all reproducible from scratch with `uv sync`. Next, [The repo layout →](/fittrack/en/setup/repo-layout/) puts this `api/` project into the full FitTrack repo, alongside the Flutter and Svelte clients that will call it.
+`api/` is a `uv`-managed FastAPI project: `uv init --package` scaffolded it, `uv python pin 3.14` fixed the interpreter, and `uv add "fastapi[standard]"` installed FastAPI plus Uvicorn, the `fastapi` CLI, and the test client — recording everything in `pyproject.toml` and `uv.lock`. The app is an `app/` **package** from the start, with `app/main.py` holding only the `FastAPI()` instance and a `/health` endpoint, leaving room for the config, database, auth, and routers later modules add. `uv run fastapi dev app/main.py` served it with hot reload, `curl /health` returned `{"status":"ok"}`, and the auto-generated `/docs` already listed the route — all reproducible from scratch with `uv sync`. Next, [The repo layout →](/fittrack/en/setup/repo-layout/) puts this `api/` project into the full FitTrack repo, alongside the Flutter and Svelte clients that will call it.

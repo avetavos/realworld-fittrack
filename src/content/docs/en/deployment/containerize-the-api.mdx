@@ -13,7 +13,7 @@ You'll write a **multi-stage Dockerfile**: a *builder* stage that uses the offic
 
 ## Why
 
-A container image is the deployment unit the rest of the industry has agreed on. Instead of asking a host to "install Python 3.12, then uv, then run `uv sync`", you hand it one immutable image and it runs the image. That eliminates the entire class of "works on my machine" problems: the interpreter version, the OS libraries, and every dependency down to the patch are baked in and identical everywhere the image runs.
+A container image is the deployment unit the rest of the industry has agreed on. Instead of asking a host to "install Python 3.14, then uv, then run `uv sync`", you hand it one immutable image and it runs the image. That eliminates the entire class of "works on my machine" problems: the interpreter version, the OS libraries, and every dependency down to the patch are baked in and identical everywhere the image runs.
 
 **Multi-stage** matters because the tools you need to *build* the app are not the tools you need to *run* it. The builder stage has `uv`, a full toolchain, and your source tree; the runtime stage needs only the resulting `.venv` and the `app/` package. By copying just the virtualenv across the stage boundary, the final image never ships `uv`, build caches, or anything else — it's smaller, has less installed to attack, and starts faster.
 
@@ -25,7 +25,7 @@ And note what runs the app: not `fastapi dev`, but **`uvicorn app.main:app`** di
 
 **The official `uv` image** vs. **`pip install uv` onto a plain Python base**
 
-- **Pros:** `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` ships a known-good `uv` and the matching Python already assembled, so the builder stage starts installing immediately with no bootstrap step; the version of `uv` is pinned by the tag, which keeps builds reproducible.
+- **Pros:** `ghcr.io/astral-sh/uv:python3.14-bookworm-slim` ships a known-good `uv` and the matching Python already assembled, so the builder stage starts installing immediately with no bootstrap step; the version of `uv` is pinned by the tag, which keeps builds reproducible.
 - **Cons:** you take a dependency on Astral's image registry and its tagging; a shop that must build from an approved internal base image can instead start from that base and `pip install uv` (or copy the `uv` binary in with `COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv`) — one extra layer, same result.
 
 **A multi-stage build** vs. **a single-stage image that just runs `uv sync` and starts the server**
@@ -43,9 +43,9 @@ Everything here lives in `api/`, next to the `pyproject.toml` and `uv.lock` from
 # api/Dockerfile — multi-stage build for the FitTrack FastAPI backend.
 
 # --- Builder stage -------------------------------------------------------
-# The official uv image ships uv + a matching Python 3.12. We use it only
+# The official uv image ships uv + a matching Python 3.14. We use it only
 # to resolve and install the locked dependencies into a project venv.
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS builder
 
 # Compile .pyc ahead of time (faster cold starts) and copy packages into
 # the venv rather than symlinking to uv's cache (the cache won't exist in
@@ -71,7 +71,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # --- Runtime stage -------------------------------------------------------
 # A clean, slim Python with no build tools. We copy the finished venv and
 # the app package across, and nothing else.
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 WORKDIR /app
 
@@ -175,7 +175,7 @@ A couple of hundred megabytes is expected; if you see the builder tooling in the
 
 Check your understanding:
 
-- Why does the runtime stage start from `python:3.12-slim-bookworm` instead of the `uv` image the builder used? What is deliberately *not* in the final image?
+- Why does the runtime stage start from `python:3.14-slim-bookworm` instead of the `uv` image the builder used? What is deliberately *not* in the final image?
 - What does `uv sync --frozen` do that `uv sync` alone does not, and why is that the behavior you want in a build rather than on your laptop?
 - The Dockerfile copies `pyproject.toml` and `uv.lock` and runs a sync *before* copying `app/`. What does that ordering buy you across rebuilds?
 - Why must `.env` be listed in `.dockerignore`, and where do `DATABASE_URL` and `SUPABASE_JWT_SECRET` come from instead once the container is running?

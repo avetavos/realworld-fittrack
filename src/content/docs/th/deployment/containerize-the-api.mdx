@@ -13,7 +13,7 @@ Production image สำหรับ `api/` — FastAPI backend ที่ทั�
 
 ## ทำไม
 
-Container image คือหน่วย deploy ที่คนทั้งวงการตกลงกันแล้ว แทนที่จะขอให้ host "ติดตั้ง Python 3.12, แล้ว uv, แล้วรัน `uv sync`" คุณส่ง image ตัวเดียวที่ immutable ไปให้ แล้ว host ก็รัน image นั้น วิธีนี้กำจัดปัญหาทั้งกลุ่ม "รันได้บนเครื่องผมนะ" ออกไป: เวอร์ชัน interpreter, OS libraries, และทุก dependency ลงลึกถึง patch ถูก bake เข้าไปและเหมือนกันทุกที่ที่ image รัน
+Container image คือหน่วย deploy ที่คนทั้งวงการตกลงกันแล้ว แทนที่จะขอให้ host "ติดตั้ง Python 3.14, แล้ว uv, แล้วรัน `uv sync`" คุณส่ง image ตัวเดียวที่ immutable ไปให้ แล้ว host ก็รัน image นั้น วิธีนี้กำจัดปัญหาทั้งกลุ่ม "รันได้บนเครื่องผมนะ" ออกไป: เวอร์ชัน interpreter, OS libraries, และทุก dependency ลงลึกถึง patch ถูก bake เข้าไปและเหมือนกันทุกที่ที่ image รัน
 
 **Multi-stage** สำคัญเพราะเครื่องมือที่ต้องใช้ตอน *build* แอปไม่ใช่เครื่องมือที่ต้องใช้ตอน *run* builder stage มี `uv`, toolchain เต็ม, และ source tree ของคุณ ส่วน runtime stage ต้องการแค่ `.venv` ที่ได้กับ package `app/` ด้วยการ copy เฉพาะ virtualenv ข้ามขอบ stage image สุดท้ายจึงไม่เคยพก `uv`, build cache, หรืออะไรอื่นเลย — เล็กกว่า, มีของให้โจมตีน้อยกว่า, และเริ่มเร็วกว่า
 
@@ -25,7 +25,7 @@ Container image คือหน่วย deploy ที่คนทั้งว�
 
 **The official `uv` image** vs. **`pip install uv` onto a plain Python base**
 
-- **Pros:** `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` พก `uv` ที่รู้ว่าใช้ได้กับ Python ที่เข้าคู่กันมาประกอบไว้เรียบร้อย builder stage จึงเริ่มติดตั้งได้ทันทีไม่ต้องมีขั้น bootstrap เวอร์ชันของ `uv` ถูก pin ด้วย tag ซึ่งทำให้ build reproducible
+- **Pros:** `ghcr.io/astral-sh/uv:python3.14-bookworm-slim` พก `uv` ที่รู้ว่าใช้ได้กับ Python ที่เข้าคู่กันมาประกอบไว้เรียบร้อย builder stage จึงเริ่มติดตั้งได้ทันทีไม่ต้องมีขั้น bootstrap เวอร์ชันของ `uv` ถูก pin ด้วย tag ซึ่งทำให้ build reproducible
 - **Cons:** คุณต้องพึ่ง image registry ของ Astral และ tag ของ registry นั้น ถ้าที่ทำงานบังคับให้ build จาก internal base image ที่อนุมัติแล้ว ก็เริ่มจาก base นั้นแล้ว `pip install uv` แทนได้ (หรือ copy binary `uv` เข้ามาด้วย `COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv`) — เพิ่มอีก layer เดียว ผลลัพธ์เหมือนกัน
 
 **A multi-stage build** vs. **a single-stage image that just runs `uv sync` and starts the server**
@@ -43,9 +43,9 @@ Container image คือหน่วย deploy ที่คนทั้งว�
 # api/Dockerfile — multi-stage build for the FitTrack FastAPI backend.
 
 # --- Builder stage -------------------------------------------------------
-# The official uv image ships uv + a matching Python 3.12. We use it only
+# The official uv image ships uv + a matching Python 3.14. We use it only
 # to resolve and install the locked dependencies into a project venv.
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS builder
 
 # Compile .pyc ahead of time (faster cold starts) and copy packages into
 # the venv rather than symlinking to uv's cache (the cache won't exist in
@@ -71,7 +71,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # --- Runtime stage -------------------------------------------------------
 # A clean, slim Python with no build tools. We copy the finished venv and
 # the app package across, and nothing else.
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 WORKDIR /app
 
@@ -175,7 +175,7 @@ docker images fittrack-api --format '{{.Size}}'
 
 ตรวจสอบความเข้าใจ:
 
-- ทำไม runtime stage ถึงเริ่มจาก `python:3.12-slim-bookworm` แทน `uv` image ที่ builder ใช้ อะไรที่ตั้งใจ *ไม่* ให้อยู่ใน image สุดท้าย?
+- ทำไม runtime stage ถึงเริ่มจาก `python:3.14-slim-bookworm` แทน `uv` image ที่ builder ใช้ อะไรที่ตั้งใจ *ไม่* ให้อยู่ใน image สุดท้าย?
 - `uv sync --frozen` ทำอะไรที่ `uv sync` เปล่า ๆ ไม่ทำ และทำไมนั่นคือพฤติกรรมที่คุณต้องการใน build มากกว่าบนเครื่อง laptop?
 - Dockerfile copy `pyproject.toml` กับ `uv.lock` แล้วรัน sync *ก่อน* copy `app/` การเรียงลำดับแบบนี้ให้อะไรกับคุณตอน rebuild?
 - ทำไม `.env` ต้องอยู่ใน `.dockerignore` และ `DATABASE_URL` กับ `SUPABASE_JWT_SECRET` มาจากไหนแทนเมื่อ container รันอยู่?
