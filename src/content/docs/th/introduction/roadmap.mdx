@@ -1,13 +1,13 @@
 ---
 title: Real-World Projects Roadmap
-description: "FitTrack คือโปรเจกต์ #4 ของ series ที่มีหกโปรเจกต์ ซึ่งดัดแปลง Learn Hub catalog ทั้งหมดให้เป็นแอปจริง นี่คือตำแหน่งของโปรเจกต์นี้และมีอะไรอยู่รอบ ๆ บ้าง"
+description: "FitTrack คือโปรเจกต์ #4 ของ series ที่มีเจ็ดโปรเจกต์ ซึ่งดัดแปลง Learn Hub catalog ทั้งหมดให้เป็นแอปจริง นี่คือตำแหน่งของโปรเจกต์นี้และมีอะไรอยู่รอบ ๆ บ้าง"
 sidebar:
   order: 4
 ---
 
 ## FitTrack อยู่ตรงไหน
 
-FitTrack คือ **โปรเจกต์ #4** ของ **Real-World Projects** series ที่มีหกโปรเจกต์ แต่ละโปรเจกต์หยิบแอปจริงคนละแบบมาสร้างใหม่จาก repo เปล่า โดยตั้งใจดึงคอร์สจาก Learn Hub คนละส่วน — เพื่อว่าเมื่อรวมกันแล้ว ทั้งหกจะครอบคลุม catalog เกือบทั้งหมด สามโปรเจกต์ **เสร็จและ live** แล้ววันนี้; FitTrack คือตัวที่คุณกำลังสร้างอยู่; และอีกสองตัวตามมาเพื่อปิด map ให้ครบทั้งฝั่ง offline web และ cloud infrastructure จริง
+FitTrack คือ **โปรเจกต์ #4** ของ **Real-World Projects** series ที่มีเจ็ดโปรเจกต์ แต่ละโปรเจกต์หยิบแอปจริงคนละแบบมาสร้างใหม่จาก repo เปล่า โดยตั้งใจดึงคอร์สจาก Learn Hub คนละส่วน — เพื่อว่าเมื่อรวมกันแล้ว ทั้งเจ็ดจะครอบคลุม catalog เกือบทั้งหมด ทั้งเจ็ดโปรเจกต์ **live** แล้ววันนี้; FitTrack คือตัวที่คุณกำลังสร้างอยู่; และอีกสามตัวถัดจากนี้ปิด map ให้ครบทั้งฝั่ง micro-frontend, offline web และ cloud infrastructure จริง
 
 ## TaskFlow — realtime Kanban board ✅ live
 
@@ -34,15 +34,21 @@ platform สำหรับ content: author เขียนใน headless CMS �
 - **Stack:** Python/FastAPI + Supabase + Flutter + Svelte
 - **Adapts:** Python Deep Dive, Python for TypeScript Developers, Supabase, Flutter (×2), Svelte
 
-## OfflineNotes — offline-first PWA
+## Mosaic — micro-frontend storefront ✅ live
+
+storefront ที่ประกอบจาก micro-frontend ที่ deploy แยกกันอิสระ: React shell compose remote ของ React, Svelte และ Astro ตอน runtime ด้วย Module Federation, Web Components เป็นขอบเขตกลางที่เชื่อมทุก framework และแต่ละ slice มี BFF บาง ๆ ของตัวเอง
+
+- **Stack:** Module Federation 2.0 + React + Svelte + Astro + Web Components + Hono
+
+## OfflineNotes — offline-first PWA ✅ live
 
 แอปโน้ตแบบ local-first ที่ทำงาน offline ได้และ sync เมื่อกลับมา online — IndexedDB, Web Components และ WASM core
 
 - **Stack:** TypeScript + Web Components + IndexedDB + WASM + Astro
 
-## CloudDeploy — infrastructure capstone
+## CloudDeploy — infrastructure capstone ✅ live
 
-เอาห้าโปรเจกต์แรกมา deploy จริง: infrastructure as code ข้าม cloud, Kubernetes, observability, identity และ feature flag
+เอา Helm chart ของ ShopMicro มา deploy จริง: infrastructure as code ข้าม cloud, Kubernetes, observability, identity และ feature flag
 
 - **Stack:** Terraform/Terragrunt (AWS/GCP/Azure) + Kubernetes + Datadog + Keycloak + GrowthBook
 

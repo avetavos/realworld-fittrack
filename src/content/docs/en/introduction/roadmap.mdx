@@ -1,13 +1,13 @@
 ---
 title: Real-World Projects Roadmap
-description: "FitTrack is project #4 of a six-project series that adapts the whole Learn Hub catalog into real applications. Here's where it fits and what's around it."
+description: "FitTrack is project #4 of a seven-project series that adapts the whole Learn Hub catalog into real applications. Here's where it fits and what's around it."
 sidebar:
   order: 4
 ---
 
 ## Where FitTrack fits
 
-FitTrack is **project #4** of a six-project **Real-World Projects** series. Each project takes a different real application and rebuilds it from an empty repo, deliberately drawing on a different slice of the Learn Hub courses — so that, taken together, the six cover almost the entire catalog. Three projects are **complete and live** today; FitTrack is the one you're building now; and two more follow to finish the map across the offline web and real cloud infrastructure.
+FitTrack is **project #4** of a seven-project **Real-World Projects** series. Each project takes a different real application and rebuilds it from an empty repo, deliberately drawing on a different slice of the Learn Hub courses — so that, taken together, the seven cover almost the entire catalog. All seven are **live** today; FitTrack is the one you're building now, and the three after it finish the map across micro-frontends, the offline web, and real cloud infrastructure.
 
 ## TaskFlow — realtime Kanban board ✅ live
 
@@ -34,15 +34,21 @@ A workout tracker with a native mobile app and a web companion, backed by a Pyth
 - **Stack:** Python/FastAPI + Supabase + Flutter + Svelte
 - **Adapts:** Python Deep Dive, Python for TypeScript Developers, Supabase, Flutter (×2), Svelte
 
-## OfflineNotes — offline-first PWA
+## Mosaic — micro-frontend storefront ✅ live
+
+A storefront of independently deployed micro-frontends: a React shell composes React, Svelte, and Astro remotes at runtime with Module Federation, Web Components are the universal boundary, and each slice has a thin BFF.
+
+- **Stack:** Module Federation 2.0 + React + Svelte + Astro + Web Components + Hono
+
+## OfflineNotes — offline-first PWA ✅ live
 
 A local-first notes app that works offline and syncs when it's back online — IndexedDB, Web Components, and a WASM core.
 
 - **Stack:** TypeScript + Web Components + IndexedDB + WASM + Astro
 
-## CloudDeploy — infrastructure capstone
+## CloudDeploy — infrastructure capstone ✅ live
 
-Take the first five projects and deploy them for real: infrastructure as code across clouds, Kubernetes, observability, identity, and feature flags.
+Take ShopMicro's Helm chart and deploy it for real: infrastructure as code across clouds, Kubernetes, observability, identity, and feature flags.
 
 - **Stack:** Terraform/Terragrunt (AWS/GCP/Azure) + Kubernetes + Datadog + Keycloak + GrowthBook
 
