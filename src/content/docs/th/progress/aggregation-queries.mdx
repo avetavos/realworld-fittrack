@@ -149,8 +149,8 @@ from string.templatelib import Template
 
 user_id = "b1e7...'; drop table workouts; --"
 query: Template = t"where w.user_id = {user_id}"
-# template รู้ว่า "where w.user_id = " คือ SQL ส่วน user_id คือค่า
-# ถ้าเป็น f-string ตอนนี้คือส่งการโจมตีให้ database ไปเรียบร้อยแล้ว
+# The template knows "where w.user_id = " is SQL and user_id is a value.
+# An f-string would already have handed the attack to the database.
 ```
 
 library จึงสามารถ bind แต่ละ interpolation เป็น parameter ได้ — ปลอดภัยโดยโครงสร้าง ไม่ต้องอาศัยวินัยแบบที่ f-string เรียกร้องจากคุณ เรื่องนี้ควรรู้ไว้ แต่ยังไม่เปลี่ยนอะไรใน FitTrack ตอนนี้: ยังไม่มี database driver ตัวไหนรับ `Template` และ `select()` ของ SQLAlchemy ก็ให้การรับประกันแบบเดียวกันอยู่แล้ว สร้าง query ตามที่บทนี้ทำต่อไปได้เลย

@@ -55,9 +55,11 @@ uv add --dev pytest pytest-asyncio httpx
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 ```
 
-`asyncio_mode = "auto"` บอก `pytest-asyncio` ให้ถือว่าทุก `async def test_*` เป็น coroutine test — ไม่ต้องมี `@pytest.mark.asyncio` บนทุก function `testpaths` ทำให้ collection ชี้ไปที่ directory `tests/`
+`asyncio_mode = "auto"` บอก `pytest-asyncio` ให้ถือว่าทุก `async def test_*` เป็น coroutine test — ไม่ต้องมี `@pytest.mark.asyncio` บนทุก function `testpaths` ทำให้ collection ชี้ไปที่ directory `tests/` สอง `loop_scope` สำคัญทันทีที่มี fixture แบบ session-scoped (fixture `engine` ด้านล่างเป็นแบบนั้น): pytest-asyncio 1.x default ให้ทุก test *และ* ทุก fixture มี event loop แบบ function-scoped ของตัวเอง ดังนั้น connection ที่ pool ไว้ของ engine แบบ session-scoped จะถูกสร้างใน loop ของ test แรก แล้วระเบิดด้วย `RuntimeError: ... attached to a different loop` ทันทีที่ test ถัดไป — ซึ่งรันใน loop คนละตัว — พยายามใช้มันซ้ำ การตั้งทั้งสอง scope เป็น `"session"` ทำให้ engine, ทุก fixture ที่พึ่งมัน, และทุก test อยู่ใน event loop *เดียวกัน* ตลอดทั้ง run ซึ่งเป็นสิ่งที่ shared pooled connection ต้องการจริง ๆ
 
 <details>
 <summary>Prefer a separate <code>pytest.ini</code>?</summary>
@@ -68,6 +70,8 @@ config เดียวกันใช้ได้เป็น `api/pytest.ini` �
 [pytest]
 asyncio_mode = auto
 testpaths = tests
+asyncio_default_fixture_loop_scope = session
+asyncio_default_test_loop_scope = session
 ```
 
 การเก็บไว้ใน `pyproject.toml` หมายถึงไฟล์น้อยลงหนึ่งไฟล์ ใช้ตัวไหนก็ได้
@@ -84,12 +88,13 @@ from uuid import UUID
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.auth import get_current_user
 from app.db import get_session
 from app.main import app
-from app.models import Base, Profile
+from app.models import Base
 
 # A dedicated test database URL, defaulting to the local Supabase Postgres.
 # Point this at a throwaway database in CI so a test run can never touch dev data.
@@ -128,10 +133,15 @@ async def session(engine):
     Session = async_sessionmaker(bind=connection, expire_on_commit=False)
 
     async with Session() as session:
-        # The fake user needs a profiles row: workouts.user_id and
-        # user-created exercises.created_by both FK to profiles(id). flush()
-        # (not commit) keeps it inside the transaction we roll back.
-        session.add(Profile(id=FAKE_USER_ID, display_name="Test User"))
+        # profiles.id is a real FK to auth.users(id) (see Auth and RLS), so
+        # the fake user has to exist there first, or the next line's insert
+        # fails with a ForeignKeyViolationError. Inserting into auth.users
+        # fires the on_auth_user_created trigger, which inserts the matching
+        # profiles row itself — do not also add a Profile() here, or that
+        # insert collides with the trigger's on the primary key.
+        await session.execute(
+            text("insert into auth.users (id) values (:id)"), {"id": FAKE_USER_ID}
+        )
         await session.flush()
         yield session
 
@@ -328,7 +338,7 @@ uv run pytest -q && uv run pytest -q
 - ทำไม suite ถึงใช้ `httpx.AsyncClient` กับ `ASGITransport(app=app)` แทนที่จะ start `uvicorn` แล้วเรียกผ่าน `http://localhost:8000`? in-process client ยังครอบคลุมอะไรที่ bare repository test จะไม่ครอบคลุม?
 - `session` fixture เรียก `await transaction.rollback()` และไม่เคย commit เลย นั่นทำให้สอง test ที่ต่างก็สร้าง exercise ไม่รบกวนกันได้อย่างไร และทำไมลำดับ test ถึงหมดความสำคัญ?
 - `app.dependency_overrides[get_current_user] = lambda: FAKE_USER_ID` แทนที่อะไร และทำไม test ถึงยิง route ที่ป้องกันด้วย `Depends(get_current_user)` ได้โดยไม่ต้องสร้าง Supabase JWT เลย?
-- `session` fixture insert row `Profile` สำหรับ `FAKE_USER_ID` ด้วย `flush()` ก่อน yield ทำไม row นั้นถึงจำเป็นก่อนที่จะ log workout ได้ และทำไม `flush()` ไม่ใช่ `commit()`?
+- `session` fixture insert row เข้า `auth.users` สำหรับ `FAKE_USER_ID` ด้วย `flush()` ก่อน yield แล้วปล่อยให้ trigger `on_auth_user_created` สร้างแถว `profiles` ที่ตรงกันเอง ทำไม profile ถึงต้องมีอยู่ก่อนที่จะ log workout ได้ ทำไมต้อง insert เข้า `auth.users` แทนที่จะ insert `profiles` ตรง ๆ และทำไม `flush()` ไม่ใช่ `commit()`?
 
 ## สรุป
 

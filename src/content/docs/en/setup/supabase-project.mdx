@@ -88,6 +88,8 @@ SUPABASE_JWT_SECRET=super-secret-jwt-token-with-at-least-32-characters
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:54322/postgres
 ```
 
+Current Supabase CLI versions print two more values alongside these: a `Publishable` key (`sb_publishable_...`) and a `Secret` key (`sb_secret_...`) — the newer, non-JWT replacements for `anon key`/`service_role key`, meant for the client SDKs and admin scripts respectively. FitTrack doesn't need either: the Flutter and Svelte clients still use the `anon key` shown above (Supabase keeps issuing it for backward compatibility), and the backend never uses a `service_role`-equivalent key at all — it verifies the caller's own token instead of holding a master key. Keep `SUPABASE_ANON_KEY` and `SUPABASE_JWT_SECRET` as shown; you can ignore the publishable/secret pair for this course.
+
 ### 5. (Later) the hosted project
 
 For deployment you'll also create a free hosted project at [supabase.com](https://supabase.com) → **New project**, and link it:
@@ -120,9 +122,9 @@ psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "select versio
 ```
 
 ```txt
-                                          version
-------------------------------------------------------------------------------
- PostgreSQL 15.x on aarch64-unknown-linux-gnu, compiled by gcc ...
+                                      version
+------------------------------------------------------------------------------------
+ PostgreSQL 17.6 on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 15.2.0, 64-bit
 (1 row)
 ```
 

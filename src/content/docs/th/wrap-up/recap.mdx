@@ -32,7 +32,7 @@ sequenceDiagram
     Auth-->>C: JWT
     Note over C: user taps "save" on a set
     C->>API: POST /workouts (+ Bearer JWT)
-    API->>API: verify JWT (HS256, aud=authenticated)
+    API->>API: verify JWT (JWKS/ES256 or HS256, aud=authenticated)
     API->>DB: INSERT workout + sets (async, one tx)
     DB-->>API: rows committed
     API-->>C: 201 Created (WorkoutRead)

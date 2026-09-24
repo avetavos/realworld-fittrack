@@ -65,3 +65,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     Review what you built, the trade-offs, and where to take FitTrack next. [Open →](/fittrack/en/wrap-up/)
   </Card>
 </CardGrid>
+
+## Versions verified
+
+Python 3.14, FastAPI 0.141 (`fastapi[standard]`, PyJWT 2.x with the `[crypto]` extra for `PyJWKClient`), Pydantic v2, SQLAlchemy 2.0 async + `asyncpg`, Supabase CLI 2.117 (Postgres 17, asymmetric ES256 signing keys verified via the project's JWKS endpoint, with the legacy HS256 `SUPABASE_JWT_SECRET` as a fallback for older sessions), pytest 9.x + pytest-asyncio 1.x, Flutter 3.44 / Dart 3.12, Node 24 + SvelteKit.

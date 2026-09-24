@@ -123,13 +123,15 @@ SQL error ใด ๆ จะหยุด reset แล้วพิมพ์บร�
 ยืนยันว่า migration ถูก register:
 
 ```bash
-supabase migration list
+supabase migration list --local
 ```
 
+`--local` สำคัญ: ถ้าไม่ใส่ flag เลย CLI รุ่นปัจจุบันจะคาดหวัง linked hosted project แล้วปฏิเสธด้วย "Cannot find project ref" — คุณยังไม่ได้ link project ไหนเลย จึงต้องบอกมันตรง ๆ ให้อ่าน local database
+
 ```txt
-   LOCAL      │     REMOTE     │     TIME (UTC)
-  ────────────┼────────────────┼──────────────────────
-   20260714120000 │                │ 2026-07-14 12:00:00
+   Local            | Remote           | Time (UTC)
+  ------------------|------------------|-----------------------
+   `20260714120000` | `20260714120000` | `2026-07-14 12:00:00`
 ```
 
 แล้ว connect ด้วย `psql` และ list table เพื่อพิสูจน์ว่าสร้างขึ้นจริง:
@@ -162,4 +164,4 @@ psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "\dt"
 
 ## สรุป
 
-database ของ FitTrack คือ **สี่ table** — `profiles` (1:1 กับ `auth.users` ของ Supabase, user record ที่ app เป็นเจ้าของ), `exercises` (catalog เดียวสำหรับทั้งของแชร์และของที่ user สร้าง), `workouts` (session ที่ log ไว้), และ `workout_sets` (set ภายใน session) — define เป็น **migration เดียวที่อยู่ใน version control** คุณสร้างไฟล์ด้วย `supabase migration new` เขียน `CREATE TABLE` DDL เองด้วย primary key แบบ `uuid`, น้ำหนักแบบ `numeric` แบบ exact, และ foreign key ที่ cascade ลงมาตาม chain ของ ownership แล้ว apply ด้วย `supabase db reset` ซึ่ง rebuild local database แบบ deterministic จากทุกไฟล์ migration `supabase migration list` กับ `psql \dt` ยืนยันว่าสี่ table มีอยู่ และการ reset ครั้งที่สองพิสูจน์ว่าประวัติเล่นซ้ำได้สะอาด table อยู่ที่แล้วแต่ยังเปิดโล่ง — ยังไม่มีอะไรผูก row ของ `workouts` เข้ากับ user ที่มีสิทธิ์อ่าน ต่อไป [Auth and RLS →](/fittrack/th/supabase/auth-and-rls/) เปิด email authentication, auto-create row ใน `profiles` ให้ user ใหม่ทุกคนด้วย database trigger, และล็อกทุก table ด้วย row-level security
+database ของ FitTrack คือ **สี่ table** — `profiles` (1:1 กับ `auth.users` ของ Supabase, user record ที่ app เป็นเจ้าของ), `exercises` (catalog เดียวสำหรับทั้งของแชร์และของที่ user สร้าง), `workouts` (session ที่ log ไว้), และ `workout_sets` (set ภายใน session) — define เป็น **migration เดียวที่อยู่ใน version control** คุณสร้างไฟล์ด้วย `supabase migration new` เขียน `CREATE TABLE` DDL เองด้วย primary key แบบ `uuid`, น้ำหนักแบบ `numeric` แบบ exact, และ foreign key ที่ cascade ลงมาตาม chain ของ ownership แล้ว apply ด้วย `supabase db reset` ซึ่ง rebuild local database แบบ deterministic จากทุกไฟล์ migration `supabase migration list --local` กับ `psql \dt` ยืนยันว่าสี่ table มีอยู่ และการ reset ครั้งที่สองพิสูจน์ว่าประวัติเล่นซ้ำได้สะอาด table อยู่ที่แล้วแต่ยังเปิดโล่ง — ยังไม่มีอะไรผูก row ของ `workouts` เข้ากับ user ที่มีสิทธิ์อ่าน ต่อไป [Auth and RLS →](/fittrack/th/supabase/auth-and-rls/) เปิด email authentication, auto-create row ใน `profiles` ให้ user ใหม่ทุกคนด้วย database trigger, และล็อกทุก table ด้วย row-level security

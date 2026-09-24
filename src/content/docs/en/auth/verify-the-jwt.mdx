@@ -1,24 +1,26 @@
 ---
 title: Verify the Supabase JWT
-description: "app/auth.py — take the Bearer token a client got from Supabase Auth and prove it's real: jwt.decode(token, settings.supabase_jwt_secret, algorithms=[\"HS256\"], audience=\"authenticated\") with PyJWT, wrapped in a get_current_user FastAPI dependency that returns the user id from the sub claim and raises 401 on any failure. Why FastAPI re-verifies a token Supabase already issued, and why the signature check is the whole security boundary. Verified by getting a real token from local Supabase and hitting a protected /me."
+description: "app/auth.py — take the Bearer token a client got from Supabase Auth and prove it's real: PyJWT's PyJWKClient fetches Supabase's public signing key from its JWKS endpoint to verify current ES256-signed tokens, falling back to jwt.decode(token, settings.supabase_jwt_secret, algorithms=[\"HS256\"]) for any legacy HS256 session, both checked with audience=\"authenticated\" — wrapped in a get_current_user FastAPI dependency that returns the user id from the sub claim and raises 401 on any failure. Why FastAPI re-verifies a token Supabase already issued, why Supabase's signing key can be either shape, and why the signature check is the whole security boundary. Verified by getting a real token from local Supabase and hitting a protected /me."
 sidebar:
   order: 1
 ---
 
 ## What we're building
 
-`app/auth.py` — the single place FitTrack decides *who is calling*. Both clients (Flutter and Svelte) sign in through **Supabase Auth** and receive a **JWT**. They send that token on every request to FastAPI as an `Authorization: Bearer <token>` header. This lesson writes the code that opens that token, checks its signature against your Supabase **JWT secret**, and hands the rest of the app a plain user id — or refuses the request with `401`.
+`app/auth.py` — the single place FitTrack decides *who is calling*. Both clients (Flutter and Svelte) sign in through **Supabase Auth** and receive a **JWT**. They send that token on every request to FastAPI as an `Authorization: Bearer <token>` header. This lesson writes the code that opens that token, checks its signature against Supabase's **signing key**, and hands the rest of the app a plain user id — or refuses the request with `401`.
 
 The deliverable is one reusable **FastAPI dependency**, `get_current_user`, plus a `CurrentUser` type alias so any handler can require a logged-in user by adding a single parameter. To prove it works end to end we wire it into a first protected route, `GET /me`, that just echoes the caller's id — [The current user →](/fittrack/en/auth/current-user/) turns that stub into a real profile lookup.
 
 ## Why
 
-Supabase already authenticated the user — so why does FastAPI check the token again? Because **the token is the only thing FastAPI receives**. The client did the login (email + password, magic link, OAuth) against Supabase and got back a signed JWT. FastAPI never sees the password and never calls Supabase to ask "is this person real?" on each request. Instead, Supabase signed the token with a secret **only Supabase and your backend know** — the `SUPABASE_JWT_SECRET`. If FastAPI can verify that signature with the same secret, it knows the token was minted by Supabase and hasn't been tampered with. That one cryptographic check *is* the authentication. It's fast (no network call, no database), stateless, and it's exactly why a JWT is worth using.
+Supabase already authenticated the user — so why does FastAPI check the token again? Because **the token is the only thing FastAPI receives**. The client did the login (email + password, magic link, OAuth) against Supabase and got back a signed JWT. FastAPI never sees the password and never calls Supabase to ask "is this person real?" on each request. Instead, Supabase signs the token with a key only Supabase holds the private half of. If FastAPI can verify that signature, it knows the token was minted by Supabase and hasn't been tampered with. That one cryptographic check *is* the authentication. It's fast (no database hit, and no per-request network call once the signing key is cached), stateless, and it's exactly why a JWT is worth using.
 
-`jwt.decode` from **PyJWT** does three things in one call, and every one of them matters:
+Current Supabase projects sign new user sessions with an **asymmetric** key pair — **ES256** (elliptic-curve) — and publish the *public* half at a well-known **JWKS** endpoint, `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`. Anyone can fetch that public key and verify a signature with it; only Supabase holds the private key that *creates* one. A project can also still carry sessions signed the older way, with a **shared secret** (**HS256**, the `SUPABASE_JWT_SECRET` from `supabase status`) — the same secret both signs and verifies, so it must stay server-only. Because a token's own header names which one it used, `get_current_user` reads that header first and verifies each shape the way it has to: the shared secret for `HS256`, the JWKS public key for anything else.
 
-- **`algorithms=["HS256"]`** — Supabase's local stack signs tokens with **HS256** (a symmetric HMAC using the shared secret). Pinning the algorithm is a security requirement, not a formality: without it an attacker could hand you a token that claims `alg: none` and PyJWT would be within its rights to skip the signature check. You state the algorithm you accept and reject everything else.
-- **the secret** — `settings.supabase_jwt_secret`, the same value you put in `.env` from your Supabase project. This is the key the signature is checked against. It is **server-only** and must never ship in a client build.
+`jwt.decode` does three things in one call, and every one of them matters:
+
+- **`algorithms=[...]`** — the list of algorithms you'll accept, always passed explicitly. Pinning it is a security requirement, not a formality: without it an attacker could hand you a token that claims `alg: none` and PyJWT would be within its rights to skip the signature check. You state the algorithms you accept and reject everything else — never derive the allow-list from the token's own header.
+- **the key** — either `settings.supabase_jwt_secret` (for a legacy `HS256` token) or the public key `PyJWKClient` fetched from the JWKS endpoint (for a current `ES256` token), matched by the token's `kid` header. The shared secret is **server-only** and must never ship in a client build; the JWKS public key is, by design, safe to publish.
 - **`audience="authenticated"`** — Supabase stamps every signed-in user's token with `aud: "authenticated"`. Verifying the audience means a token minted for some *other* purpose can't be replayed against your API. PyJWT raises if it doesn't match.
 
 If any check fails — bad signature, expired token, wrong audience, garbage input — PyJWT raises, and we translate that into a single `401 Unauthorized`. We deliberately don't leak *why* it failed; "invalid token" is all a caller needs.
@@ -42,10 +44,10 @@ Finally, this lives behind FastAPI's **dependency injection** rather than as a h
 ### 1. Add PyJWT
 
 ```bash
-uv add pyjwt
+uv add "pyjwt[crypto]"
 ```
 
-PyJWT is the encode/decode library; we only use `decode` here. It's a single small dependency with no surprises.
+PyJWT is the encode/decode library; we only use `decode` here. The `[crypto]` extra pulls in the `cryptography` package, which PyJWT needs to check an `ES256` signature — without it, verifying a current Supabase token raises `MissingCryptographyError` instead of the clean `401` this lesson builds.
 
 ### 2. `app/auth.py`
 
@@ -57,6 +59,7 @@ from uuid import UUID
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import PyJWKClient
 
 from app.config import settings
 
@@ -64,6 +67,12 @@ from app.config import settings
 # FastAPI raising its own 403 — we want one consistent 401 for every
 # authentication failure, present-but-bad or absent alike.
 bearer_scheme = HTTPBearer(auto_error=False)
+
+# Supabase signs new user sessions with an asymmetric key (ES256) and
+# publishes the public half at this well-known JWKS endpoint — the same
+# path for local and hosted Supabase. PyJWKClient fetches and caches it,
+# then picks the right key by the token's `kid` header.
+_jwks_client = PyJWKClient(f"{settings.supabase_url}/auth/v1/.well-known/jwks.json")
 
 
 def _unauthorized(detail: str) -> HTTPException:
@@ -86,11 +95,22 @@ def get_current_user(
     if credentials is None:
         raise _unauthorized("Missing bearer token")
 
+    token = credentials.credentials
+
     try:
+        # A project can carry legacy sessions signed with the shared secret
+        # (HS256) alongside current ones signed with the asymmetric project
+        # key (ES256) — the token's own header says which, so branch on
+        # that instead of guessing or hardcoding one algorithm.
+        header = jwt.get_unverified_header(token)
+        if header.get("alg") == "HS256":
+            signing_key = settings.supabase_jwt_secret
+        else:
+            signing_key = _jwks_client.get_signing_key_from_jwt(token).key
         payload = jwt.decode(
-            credentials.credentials,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
+            token,
+            signing_key,
+            algorithms=["HS256", "ES256"],
             audience="authenticated",
         )
     except jwt.PyJWTError:
@@ -113,7 +133,7 @@ def get_current_user(
 CurrentUser = Annotated[UUID, Depends(get_current_user)]
 ```
 
-Save this as `app/auth.py`. It reads `settings.supabase_jwt_secret` from the `Settings` you built in [App & config →](/fittrack/en/fastapi/app-and-config/), so make sure `SUPABASE_JWT_SECRET` is set in your `.env`.
+Save this as `app/auth.py`. It reads `settings.supabase_url` to build the JWKS URL and `settings.supabase_jwt_secret` for the legacy fallback, both from the `Settings` you built in [App & config →](/fittrack/en/fastapi/app-and-config/) — make sure both `SUPABASE_URL` and `SUPABASE_JWT_SECRET` are set in your `.env`.
 
 ### 3. A first protected route
 
@@ -121,6 +141,8 @@ Add a `GET /me` to `app/main.py` that requires the dependency. For now it just r
 
 ```python
 # app/main.py
+from uuid import UUID
+
 from fastapi import FastAPI
 
 from app.auth import CurrentUser
@@ -135,12 +157,12 @@ def health() -> dict[str, str]:
 
 
 @app.get("/me")
-def read_me(user_id: CurrentUser) -> dict[str, str]:
+def read_me(user_id: CurrentUser) -> dict[str, UUID]:
     """Whoami — proves the JWT dependency runs before we add the DB lookup."""
     return {"user_id": user_id}
 ```
 
-That's the entire wiring: `user_id: CurrentUser` is all it takes to make a route require a valid Supabase token.
+That's the entire wiring: `user_id: CurrentUser` is all it takes to make a route require a valid Supabase token. The return type matters here, not just for documentation: FastAPI uses a route's return annotation as its response model, so `-> dict[str, UUID]` (not `dict[str, str]`) is what lets it serialize the `UUID` `get_current_user` returns — annotating it as `str` raises a `ResponseValidationError` the moment a real request comes in, because the value in hand is a `UUID`, not a `str`.
 
 ## Verify
 
@@ -186,10 +208,10 @@ Finally, open [http://localhost:8000/docs](http://localhost:8000/docs): `GET /me
 Check your understanding:
 
 - FastAPI never sees the user's password and never calls Supabase per request. What single piece of information lets it trust the token anyway, and where does that value have to be kept?
-- Why do we pass `algorithms=["HS256"]` explicitly instead of letting PyJWT read the algorithm from the token itself?
+- Why do we pass `algorithms=["HS256", "ES256"]` explicitly instead of letting PyJWT trust whatever `alg` the token's own header claims?
 - What does `audience="authenticated"` protect against, and what does PyJWT do if the token's `aud` doesn't match?
 - We set `HTTPBearer(auto_error=False)` and handle a missing header ourselves. What would the response code be for a *missing* `Authorization` header if we left `auto_error=True`, and why did we not want that?
 
 ## Recap
 
-`app/auth.py` is FitTrack's authentication boundary. A client authenticates against **Supabase Auth**, receives a **JWT**, and sends it as a Bearer token; FastAPI re-verifies that token locally with **PyJWT** — `jwt.decode(..., algorithms=["HS256"], audience="authenticated")` against the shared `SUPABASE_JWT_SECRET` — and pulls the user id out of the `sub` claim. Any failure (missing, malformed, expired, wrong signature, wrong audience) collapses to a single `401`. All of it is packaged as the `get_current_user` dependency and its `CurrentUser` alias, so a route requires a logged-in user with one typed parameter, and the padlock shows up in `/docs` automatically. We proved it by getting a genuine token from local Supabase and watching `/me` accept it and reject everything else. Next, [The current user →](/fittrack/en/auth/current-user/) turns that `/me` stub into a real endpoint that looks the profile up in the database and shows the pattern every protected route in FitTrack will follow.
+`app/auth.py` is FitTrack's authentication boundary. A client authenticates against **Supabase Auth**, receives a **JWT**, and sends it as a Bearer token; FastAPI re-verifies that token locally with **PyJWT** — the token's header says whether it's a current `ES256` session (verified against the public key `PyJWKClient` fetched from Supabase's JWKS endpoint) or a legacy `HS256` one (verified against the shared `SUPABASE_JWT_SECRET`), both checked with `audience="authenticated"` — and pulls the user id out of the `sub` claim. Any failure (missing, malformed, expired, wrong signature, wrong audience) collapses to a single `401`. All of it is packaged as the `get_current_user` dependency and its `CurrentUser` alias, so a route requires a logged-in user with one typed parameter, and the padlock shows up in `/docs` automatically. We proved it by getting a genuine token from local Supabase and watching `/me` accept it and reject everything else. Next, [The current user →](/fittrack/en/auth/current-user/) turns that `/me` stub into a real endpoint that looks the profile up in the database and shows the pattern every protected route in FitTrack will follow.

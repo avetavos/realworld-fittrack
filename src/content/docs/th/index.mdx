@@ -65,3 +65,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     ทบทวนสิ่งที่สร้าง, trade-off ต่าง ๆ และจะพา FitTrack ไปต่อทางไหน [Open →](/fittrack/th/wrap-up/)
   </Card>
 </CardGrid>
+
+## เวอร์ชันที่ตรวจสอบแล้ว
+
+Python 3.14, FastAPI 0.141 (`fastapi[standard]`, PyJWT 2.x พร้อม extra `[crypto]` สำหรับ `PyJWKClient`), Pydantic v2, SQLAlchemy 2.0 async + `asyncpg`, Supabase CLI 2.117 (Postgres 17, asymmetric ES256 signing key ที่ verify ผ่าน JWKS endpoint ของ project โดยมี `SUPABASE_JWT_SECRET` แบบ HS256 รุ่นเก่าเป็น fallback สำหรับ session เก่า), pytest 9.x + pytest-asyncio 1.x, Flutter 3.44 / Dart 3.12, Node 24 + SvelteKit

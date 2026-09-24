@@ -55,9 +55,11 @@ Add a pytest section so async tests run without decorating every one of them:
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 ```
 
-`asyncio_mode = "auto"` tells `pytest-asyncio` to treat every `async def test_*` as a coroutine test — no `@pytest.mark.asyncio` on each function. `testpaths` keeps collection pointed at the `tests/` directory.
+`asyncio_mode = "auto"` tells `pytest-asyncio` to treat every `async def test_*` as a coroutine test — no `@pytest.mark.asyncio` on each function. `testpaths` keeps collection pointed at the `tests/` directory. The two `loop_scope` lines matter as soon as a fixture is session-scoped (the `engine` fixture below is): pytest-asyncio 1.x defaults every test *and* every fixture to its own function-scoped event loop, so a session-scoped engine's pooled connections get created in the first test's loop and then explode with `RuntimeError: ... attached to a different loop` the moment a later test — running in its own, different loop — tries to reuse them. Setting both scopes to `"session"` puts the engine, every fixture that depends on it, and every test in the *same* event loop for the whole run, which is what a shared, pooled connection actually requires.
 
 <details>
 <summary>Prefer a separate <code>pytest.ini</code>?</summary>
@@ -68,6 +70,8 @@ The same config works as a standalone `api/pytest.ini` — the section is just `
 [pytest]
 asyncio_mode = auto
 testpaths = tests
+asyncio_default_fixture_loop_scope = session
+asyncio_default_test_loop_scope = session
 ```
 
 Keeping it in `pyproject.toml` means one fewer file; either is fine.
@@ -84,12 +88,13 @@ from uuid import UUID
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.auth import get_current_user
 from app.db import get_session
 from app.main import app
-from app.models import Base, Profile
+from app.models import Base
 
 # A dedicated test database URL, defaulting to the local Supabase Postgres.
 # Point this at a throwaway database in CI so a test run can never touch dev data.
@@ -128,10 +133,15 @@ async def session(engine):
     Session = async_sessionmaker(bind=connection, expire_on_commit=False)
 
     async with Session() as session:
-        # The fake user needs a profiles row: workouts.user_id and
-        # user-created exercises.created_by both FK to profiles(id). flush()
-        # (not commit) keeps it inside the transaction we roll back.
-        session.add(Profile(id=FAKE_USER_ID, display_name="Test User"))
+        # profiles.id is a real FK to auth.users(id) (see Auth and RLS), so
+        # the fake user has to exist there first, or the next line's insert
+        # fails with a ForeignKeyViolationError. Inserting into auth.users
+        # fires the on_auth_user_created trigger, which inserts the matching
+        # profiles row itself — do not also add a Profile() here, or that
+        # insert collides with the trigger's on the primary key.
+        await session.execute(
+            text("insert into auth.users (id) values (:id)"), {"id": FAKE_USER_ID}
+        )
         await session.flush()
         yield session
 
@@ -328,7 +338,7 @@ Check your understanding:
 - Why does the suite use `httpx.AsyncClient` with `ASGITransport(app=app)` instead of starting `uvicorn` and calling it over `http://localhost:8000`? What does the in-process client still cover that a bare repository test would not?
 - The `session` fixture calls `await transaction.rollback()` and never commits. How does that keep two tests that both create an exercise from interfering, and why does test order stop mattering?
 - What does `app.dependency_overrides[get_current_user] = lambda: FAKE_USER_ID` replace, and why can a test hit a `Depends(get_current_user)`-protected route without ever creating a Supabase JWT?
-- The `session` fixture inserts a `Profile` row for `FAKE_USER_ID` with `flush()` before yielding. Why is that row needed before any workout can be logged, and why `flush()` rather than `commit()`?
+- The `session` fixture inserts a row into `auth.users` for `FAKE_USER_ID` with `flush()` before yielding, and lets the `on_auth_user_created` trigger create the matching `profiles` row. Why does the profile have to exist before any workout can be logged, why insert into `auth.users` rather than `profiles` directly, and why `flush()` rather than `commit()`?
 
 ## Recap
 

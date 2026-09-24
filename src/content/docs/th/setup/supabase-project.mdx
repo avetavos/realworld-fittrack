@@ -88,6 +88,8 @@ SUPABASE_JWT_SECRET=super-secret-jwt-token-with-at-least-32-characters
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:54322/postgres
 ```
 
+Supabase CLI รุ่นปัจจุบัน print ค่าเพิ่มอีกสองตัวควบคู่ไปกับพวกนี้: key `Publishable` (`sb_publishable_...`) และ key `Secret` (`sb_secret_...`) — ตัวแทนรุ่นใหม่ที่ไม่ใช่ JWT ของ `anon key`/`service_role key` เดิม สำหรับ client SDK และ admin script ตามลำดับ FitTrack ไม่ต้องใช้ตัวไหนเลย: client Flutter และ Svelte ยังใช้ `anon key` ตามที่แสดงด้านบน (Supabase ยังออกให้เพื่อ backward compatibility) และ backend ก็ไม่เคยใช้ key แบบ `service_role` เลย — มันแค่ verify token ของผู้เรียกเองแทนที่จะถือ master key ตั้งค่า `SUPABASE_ANON_KEY` กับ `SUPABASE_JWT_SECRET` ตามที่แสดงไว้ ส่วนคู่ publishable/secret ข้ามไปได้สำหรับคอร์สนี้
+
 ### 5. (ไว้ทีหลัง) hosted project
 
 สำหรับ deployment คุณจะสร้าง hosted project ฟรีที่ [supabase.com](https://supabase.com) → **New project** แล้ว link เข้ากับ repo ด้วย:
@@ -120,9 +122,9 @@ psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -c "select versio
 ```
 
 ```txt
-                                          version
-------------------------------------------------------------------------------
- PostgreSQL 15.x on aarch64-unknown-linux-gnu, compiled by gcc ...
+                                      version
+------------------------------------------------------------------------------------
+ PostgreSQL 17.6 on aarch64-unknown-linux-gnu, compiled by gcc (GCC) 15.2.0, 64-bit
 (1 row)
 ```
 

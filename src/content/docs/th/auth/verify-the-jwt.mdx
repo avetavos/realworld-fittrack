@@ -1,24 +1,26 @@
 ---
 title: Verify the Supabase JWT
-description: "app/auth.py — เอา Bearer token ที่ client ได้จาก Supabase Auth มาพิสูจน์ว่าเป็นของจริง: jwt.decode(token, settings.supabase_jwt_secret, algorithms=[\"HS256\"], audience=\"authenticated\") ด้วย PyJWT ห่อใน get_current_user FastAPI dependency ที่ return user id จาก sub claim และ raise 401 เมื่อล้มเหลว ทำไม FastAPI ถึง re-verify token ที่ Supabase ออกให้แล้ว และทำไมการ check signature คือ security boundary ทั้งหมด ตรวจสอบด้วยการขอ token จริงจาก local Supabase แล้วยิง /me ที่ป้องกันไว้"
+description: "app/auth.py — เอา Bearer token ที่ client ได้จาก Supabase Auth มาพิสูจน์ว่าเป็นของจริง: PyJWKClient ของ PyJWT ดึง public signing key ของ Supabase จาก JWKS endpoint มา verify token ES256 รุ่นปัจจุบัน แล้ว fallback ไป jwt.decode(token, settings.supabase_jwt_secret, algorithms=[\"HS256\"]) สำหรับ session HS256 รุ่นเก่า ทั้งสองแบบ check ด้วย audience=\"authenticated\" — ห่อใน get_current_user FastAPI dependency ที่ return user id จาก sub claim และ raise 401 เมื่อล้มเหลว ทำไม FastAPI ถึง re-verify token ที่ Supabase ออกให้แล้ว ทำไม signing key ของ Supabase มีได้สองแบบ และทำไมการ check signature คือ security boundary ทั้งหมด ตรวจสอบด้วยการขอ token จริงจาก local Supabase แล้วยิง /me ที่ป้องกันไว้"
 sidebar:
   order: 1
 ---
 
 ## สิ่งที่จะสร้าง
 
-`app/auth.py` — ที่เดียวที่ FitTrack ตัดสินใจว่า *ใครกำลังเรียก* client ทั้งสอง (Flutter และ Svelte) sign in ผ่าน **Supabase Auth** แล้วรับ **JWT** จากนั้นส่ง token นั้นทุก request ไป FastAPI ในฐานะ header `Authorization: Bearer <token>` บทนี้เขียนโค้ดที่เปิด token นั้น, check signature กับ **JWT secret** ของ Supabase คุณ, แล้วยื่น user id ธรรมดาให้ app ที่เหลือ — หรือปฏิเสธ request ด้วย `401`
+`app/auth.py` — ที่เดียวที่ FitTrack ตัดสินใจว่า *ใครกำลังเรียก* client ทั้งสอง (Flutter และ Svelte) sign in ผ่าน **Supabase Auth** แล้วรับ **JWT** จากนั้นส่ง token นั้นทุก request ไป FastAPI ในฐานะ header `Authorization: Bearer <token>` บทนี้เขียนโค้ดที่เปิด token นั้น, check signature กับ **signing key** ของ Supabase, แล้วยื่น user id ธรรมดาให้ app ที่เหลือ — หรือปฏิเสธ request ด้วย `401`
 
 สิ่งที่ส่งมอบคือ **FastAPI dependency** ที่ใช้ซ้ำได้ตัวเดียว, `get_current_user`, บวก type alias `CurrentUser` เพื่อให้ handler ใดก็ตาม require user ที่ login แล้วได้ด้วยการเพิ่ม parameter เดียว เพื่อพิสูจน์ว่าทำงานครบวงจร เราต่อสาย dependency นี้เข้า route ที่ป้องกันไว้ตัวแรก, `GET /me`, ที่แค่ echo id ของผู้เรียก — [The current user →](/fittrack/th/auth/current-user/) เปลี่ยน stub นั้นเป็นการ lookup profile จริง
 
 ## ทำไม
 
-Supabase authenticate user ไปแล้ว — แล้วทำไม FastAPI ถึง check token อีกครั้ง? เพราะ **token คือสิ่งเดียวที่ FastAPI ได้รับ** ฝั่ง client login (email + password, magic link, OAuth) กับ Supabase แล้วได้ JWT ที่ sign แล้วกลับมา FastAPI ไม่เคยเห็น password และไม่เคยเรียก Supabase เพื่อถามว่า "คนนี้จริงไหม" ทุก request แทนที่ Supabase sign token ด้วย secret ที่ **มีแค่ Supabase กับ backend ของคุณรู้** — `SUPABASE_JWT_SECRET` ถ้า FastAPI verify signature นั้นได้ด้วย secret เดียวกัน ก็รู้ได้ว่า token ถูก mint โดย Supabase และไม่ถูกดัดแปลง การ check ทาง cryptography ตัวเดียวนั้น *คือ* authentication ทั้งหมด และเร็วมาก (ไม่มี network call, ไม่มี database), stateless, และนั่นคือเหตุผลว่าทำไม JWT ถึงคุ้มค่าที่จะใช้
+Supabase authenticate user ไปแล้ว — แล้วทำไม FastAPI ถึง check token อีกครั้ง? เพราะ **token คือสิ่งเดียวที่ FastAPI ได้รับ** ฝั่ง client login (email + password, magic link, OAuth) กับ Supabase แล้วได้ JWT ที่ sign แล้วกลับมา FastAPI ไม่เคยเห็น password และไม่เคยเรียก Supabase เพื่อถามว่า "คนนี้จริงไหม" ทุก request แทนที่ Supabase sign token ด้วย key ที่มีแต่ Supabase ที่ถือ private half ไว้ ถ้า FastAPI verify signature นั้นได้ ก็รู้ได้ว่า token ถูก mint โดย Supabase และไม่ถูกดัดแปลง การ check ทาง cryptography ตัวเดียวนั้น *คือ* authentication ทั้งหมด และเร็วมาก (ไม่มี database hit และไม่มี network call ต่อ request หลัง cache signing key แล้ว), stateless, และนั่นคือเหตุผลว่าทำไม JWT ถึงคุ้มค่าที่จะใช้
 
-`jwt.decode` จาก **PyJWT** ทำสามอย่างในหนึ่ง call และทุกอย่างสำคัญ:
+Supabase project รุ่นปัจจุบัน sign user session ใหม่ด้วย key pair แบบ **asymmetric** — **ES256** (elliptic-curve) — แล้วเผยแพร่ public half ที่ endpoint **JWKS** ที่รู้จักกันดี, `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` ใครก็ดึง public key นั้นมา verify signature ได้; มีแต่ Supabase เท่านั้นที่ถือ private key ที่ *สร้าง* signature ได้ project ยังพก session ที่ sign แบบเก่าไว้ได้ด้วย ด้วย **shared secret** (**HS256**, `SUPABASE_JWT_SECRET` จาก `supabase status`) — secret เดียวกันทั้ง sign และ verify จึงต้องเก็บไว้ server-only เท่านั้น เพราะ header ของ token เองบอกว่าใช้แบบไหน `get_current_user` จึงอ่าน header ก่อนแล้ว verify ตามแบบที่ควรทำ: shared secret สำหรับ `HS256`, public key จาก JWKS สำหรับที่เหลือ
 
-- **`algorithms=["HS256"]`** — local stack ของ Supabase sign token ด้วย **HS256** (symmetric HMAC ที่ใช้ shared secret) การ pin algorithm เป็น security requirement ไม่ใช่พิธีการ: ถ้าไม่ระบุ attacker ยื่น token ที่อ้าง `alg: none` ให้คุณได้ และ PyJWT มีสิทธิ์ที่จะข้ามการ check signature คุณระบุ algorithm ที่คุณยอมรับแล้วปฏิเสธที่เหลือทั้งหมด
-- **secret** — `settings.supabase_jwt_secret`, ค่าเดียวกับที่คุณใส่ใน `.env` จาก Supabase project ของคุณ นี่คือ key ที่ใช้ check signature เป็นค่า **server-only** และต้องไม่ ship ใน client build เด็ดขาด
+`jwt.decode` ทำสามอย่างในหนึ่ง call และทุกอย่างสำคัญ:
+
+- **`algorithms=[...]`** — list ของ algorithm ที่คุณยอมรับ ระบุชัด ๆ เสมอ การ pin ไว้เป็น security requirement ไม่ใช่พิธีการ: ถ้าไม่ระบุ attacker ยื่น token ที่อ้าง `alg: none` ให้คุณได้ และ PyJWT มีสิทธิ์ที่จะข้ามการ check signature คุณระบุ algorithm ที่คุณยอมรับแล้วปฏิเสธที่เหลือทั้งหมด — ไม่เอา allow-list มาจาก header ของ token เอง
+- **key** — เลือกระหว่าง `settings.supabase_jwt_secret` (สำหรับ token `HS256` รุ่นเก่า) หรือ public key ที่ `PyJWKClient` ดึงมาจาก JWKS endpoint (สำหรับ token `ES256` รุ่นปัจจุบัน) จับคู่ด้วย header `kid` ของ token shared secret เป็นค่า **server-only** และต้องไม่ ship ใน client build เด็ดขาด; ส่วน public key จาก JWKS ถูกออกแบบมาให้เผยแพร่ได้อยู่แล้ว
 - **`audience="authenticated"`** — Supabase ประทับ token ของ signed-in user ทุกตัวด้วย `aud: "authenticated"` การ verify audience หมายถึง token ที่ mint มาเพื่อวัตถุประสงค์ *อื่น* replay กับ API ของคุณไม่ได้ ถ้า audience ไม่ตรง PyJWT จะ raise ทันที
 
 ถ้า check ใดล้มเหลว — signature ผิด, token หมดอายุ, audience ผิด, input ขยะ — PyJWT จะ raise และเราแปลทุกกรณีเป็น `401 Unauthorized` เดียว เราตั้งใจไม่ leak *ว่าทำไม* ถึงล้มเหลว; "invalid token" คือทั้งหมดที่ผู้เรียกต้องรู้
@@ -42,10 +44,10 @@ Supabase authenticate user ไปแล้ว — แล้วทำไม FastA
 ### 1. เพิ่ม PyJWT
 
 ```bash
-uv add pyjwt
+uv add "pyjwt[crypto]"
 ```
 
-PyJWT คือ library encode/decode; เราใช้แค่ `decode` ที่นี่ เป็น dependency เล็ก ๆ ตัวเดียวที่ไม่มีเรื่องเซอร์ไพรส์
+PyJWT คือ library encode/decode; เราใช้แค่ `decode` ที่นี่ extra `[crypto]` ดึง package `cryptography` มาด้วย ซึ่ง PyJWT ต้องใช้เพื่อ check signature `ES256` — ถ้าไม่มี, การ verify token ของ Supabase รุ่นปัจจุบันจะ raise `MissingCryptographyError` แทนที่จะเป็น `401` สะอาด ๆ ตามที่บทนี้สร้างไว้
 
 ### 2. `app/auth.py`
 
@@ -57,6 +59,7 @@ from uuid import UUID
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import PyJWKClient
 
 from app.config import settings
 
@@ -64,6 +67,12 @@ from app.config import settings
 # FastAPI raising its own 403 — we want one consistent 401 for every
 # authentication failure, present-but-bad or absent alike.
 bearer_scheme = HTTPBearer(auto_error=False)
+
+# Supabase signs new user sessions with an asymmetric key (ES256) and
+# publishes the public half at this well-known JWKS endpoint — the same
+# path for local and hosted Supabase. PyJWKClient fetches and caches it,
+# then picks the right key by the token's `kid` header.
+_jwks_client = PyJWKClient(f"{settings.supabase_url}/auth/v1/.well-known/jwks.json")
 
 
 def _unauthorized(detail: str) -> HTTPException:
@@ -86,11 +95,22 @@ def get_current_user(
     if credentials is None:
         raise _unauthorized("Missing bearer token")
 
+    token = credentials.credentials
+
     try:
+        # A project can carry legacy sessions signed with the shared secret
+        # (HS256) alongside current ones signed with the asymmetric project
+        # key (ES256) — the token's own header says which, so branch on
+        # that instead of guessing or hardcoding one algorithm.
+        header = jwt.get_unverified_header(token)
+        if header.get("alg") == "HS256":
+            signing_key = settings.supabase_jwt_secret
+        else:
+            signing_key = _jwks_client.get_signing_key_from_jwt(token).key
         payload = jwt.decode(
-            credentials.credentials,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
+            token,
+            signing_key,
+            algorithms=["HS256", "ES256"],
             audience="authenticated",
         )
     except jwt.PyJWTError:
@@ -113,7 +133,7 @@ def get_current_user(
 CurrentUser = Annotated[UUID, Depends(get_current_user)]
 ```
 
-บันทึกไฟล์นี้เป็น `app/auth.py` โดยไฟล์นี้อ่าน `settings.supabase_jwt_secret` จาก `Settings` ที่คุณสร้างใน [App & config →](/fittrack/th/fastapi/app-and-config/) ดังนั้นตรวจให้แน่ใจว่า `SUPABASE_JWT_SECRET` ตั้งอยู่ใน `.env` ของคุณ
+บันทึกไฟล์นี้เป็น `app/auth.py` โดยไฟล์นี้อ่าน `settings.supabase_url` มาสร้าง JWKS URL และ `settings.supabase_jwt_secret` สำหรับ fallback รุ่นเก่า ทั้งคู่มาจาก `Settings` ที่คุณสร้างใน [App & config →](/fittrack/th/fastapi/app-and-config/) — ตรวจให้แน่ใจว่าตั้งทั้ง `SUPABASE_URL` และ `SUPABASE_JWT_SECRET` ไว้ใน `.env` ของคุณ
 
 ### 3. protected route ตัวแรก
 
@@ -121,6 +141,8 @@ CurrentUser = Annotated[UUID, Depends(get_current_user)]
 
 ```python
 # app/main.py
+from uuid import UUID
+
 from fastapi import FastAPI
 
 from app.auth import CurrentUser
@@ -135,12 +157,12 @@ def health() -> dict[str, str]:
 
 
 @app.get("/me")
-def read_me(user_id: CurrentUser) -> dict[str, str]:
+def read_me(user_id: CurrentUser) -> dict[str, UUID]:
     """Whoami — proves the JWT dependency runs before we add the DB lookup."""
     return {"user_id": user_id}
 ```
 
-นั่นคือการต่อสายทั้งหมด: `user_id: CurrentUser` คือทั้งหมดที่ต้องใช้เพื่อทำให้ route require Supabase token ที่ valid
+นั่นคือการต่อสายทั้งหมด: `user_id: CurrentUser` คือทั้งหมดที่ต้องใช้เพื่อทำให้ route require Supabase token ที่ valid return type ตรงนี้สำคัญ ไม่ใช่แค่เพื่อ documentation: FastAPI ใช้ return annotation ของ route เป็น response model ดังนั้น `-> dict[str, UUID]` (ไม่ใช่ `dict[str, str]`) คือสิ่งที่ทำให้มัน serialize `UUID` ที่ `get_current_user` return ออกมาได้ — ถ้า annotate เป็น `str` จะ raise `ResponseValidationError` ทันทีที่มี request จริงเข้ามา เพราะค่าที่ถืออยู่คือ `UUID` ไม่ใช่ `str`
 
 ## ตรวจสอบผล
 
@@ -186,10 +208,10 @@ curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/me -H "Authorization: Be
 ตรวจสอบความเข้าใจ:
 
 - FastAPI ไม่เคยเห็น password ของ user และไม่เคยเรียก Supabase ต่อ request ข้อมูลชิ้นเดียวอะไรที่ทำให้ FastAPI trust token ได้ และต้องเก็บค่านั้นไว้ที่ไหน?
-- ทำไมเราถึง pass `algorithms=["HS256"]` ชัด ๆ แทนที่จะให้ PyJWT อ่าน algorithm จาก token เอง?
+- ทำไมเราถึง pass `algorithms=["HS256", "ES256"]` ชัด ๆ แทนที่จะให้ PyJWT เชื่อ `alg` ที่ header ของ token เองอ้าง?
 - `audience="authenticated"` ป้องกันอะไร และ PyJWT ทำอะไรถ้า `aud` ของ token ไม่ตรง?
 - เราตั้ง `HTTPBearer(auto_error=False)` และจัดการ header ที่หายไปเอง response code จะเป็นอะไรสำหรับ `Authorization` header ที่ *หายไป* ถ้าเราปล่อย `auto_error=True` และทำไมเราไม่ต้องการแบบนั้น?
 
 ## สรุป
 
-`app/auth.py` คือ authentication boundary ของ FitTrack client authenticate กับ **Supabase Auth**, รับ **JWT**, แล้วส่งเป็น Bearer token; FastAPI re-verify token นั้นแบบ local ด้วย **PyJWT** — `jwt.decode(..., algorithms=["HS256"], audience="authenticated")` กับ `SUPABASE_JWT_SECRET` ที่แชร์กัน — แล้วดึง user id ออกจาก `sub` claim การล้มเหลวใด ๆ (หายไป, ผิดรูป, หมดอายุ, signature ผิด, audience ผิด) ยุบเหลือ `401` เดียว ทั้งหมดถูกห่อเป็น dependency `get_current_user` และ alias `CurrentUser` ดังนั้น route require user ที่ login แล้วด้วย typed parameter เดียว และแม่กุญแจโผล่ใน `/docs` อัตโนมัติ เราพิสูจน์ด้วยการขอ token จริงจาก local Supabase แล้วดู `/me` ยอมรับ token นั้นและปฏิเสธที่เหลือทั้งหมด ต่อไป [The current user →](/fittrack/th/auth/current-user/) เปลี่ยน stub `/me` นั้นเป็น endpoint จริงที่ lookup profile ใน database และแสดง pattern ที่ทุก protected route ใน FitTrack จะทำตาม
+`app/auth.py` คือ authentication boundary ของ FitTrack client authenticate กับ **Supabase Auth**, รับ **JWT**, แล้วส่งเป็น Bearer token; FastAPI re-verify token นั้นแบบ local ด้วย **PyJWT** — header ของ token บอกว่าเป็น session `ES256` รุ่นปัจจุบัน (verify กับ public key ที่ `PyJWKClient` ดึงมาจาก JWKS endpoint ของ Supabase) หรือ `HS256` รุ่นเก่า (verify กับ `SUPABASE_JWT_SECRET` ที่แชร์กัน) ทั้งคู่ check ด้วย `audience="authenticated"` — แล้วดึง user id ออกจาก `sub` claim การล้มเหลวใด ๆ (หายไป, ผิดรูป, หมดอายุ, signature ผิด, audience ผิด) ยุบเหลือ `401` เดียว ทั้งหมดถูกห่อเป็น dependency `get_current_user` และ alias `CurrentUser` ดังนั้น route require user ที่ login แล้วด้วย typed parameter เดียว และแม่กุญแจโผล่ใน `/docs` อัตโนมัติ เราพิสูจน์ด้วยการขอ token จริงจาก local Supabase แล้วดู `/me` ยอมรับ token นั้นและปฏิเสธที่เหลือทั้งหมด ต่อไป [The current user →](/fittrack/th/auth/current-user/) เปลี่ยน stub `/me` นั้นเป็น endpoint จริงที่ lookup profile ใน database และแสดง pattern ที่ทุก protected route ใน FitTrack จะทำตาม

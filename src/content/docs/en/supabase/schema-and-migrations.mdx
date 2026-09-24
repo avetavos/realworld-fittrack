@@ -123,13 +123,15 @@ Any SQL error stops the reset and prints the offending line, which is exactly th
 Confirm the migration is registered:
 
 ```bash
-supabase migration list
+supabase migration list --local
 ```
 
+`--local` matters: with no flag, the current CLI expects a linked hosted project and refuses with "Cannot find project ref" — you haven't linked one yet, so tell it explicitly to read the local database.
+
 ```txt
-   LOCAL      │     REMOTE     │     TIME (UTC)
-  ────────────┼────────────────┼──────────────────────
-   20260714120000 │                │ 2026-07-14 12:00:00
+   Local            | Remote           | Time (UTC)
+  ------------------|------------------|-----------------------
+   `20260714120000` | `20260714120000` | `2026-07-14 12:00:00`
 ```
 
 Then connect with `psql` and list the tables to prove they were actually created:
@@ -162,4 +164,4 @@ Check your understanding:
 
 ## Recap
 
-FitTrack's database is **four tables** — `profiles` (1:1 with Supabase's `auth.users`, the app-owned user record), `exercises` (one catalog for shared and user-created), `workouts` (a logged session), and `workout_sets` (the sets within it) — defined as a single **version-controlled migration**. You created it with `supabase migration new`, wrote the `CREATE TABLE` DDL by hand with `uuid` primary keys, exact `numeric` weights, and cascading foreign keys down the ownership chain, then applied it with `supabase db reset`, which rebuilds the local database deterministically from every migration file. `supabase migration list` and a `psql \dt` confirmed the four tables exist, and a second reset proved the history replays cleanly. The tables are in place but wide open — nothing yet ties a `workouts` row to the user who may read it. Next, [Auth and RLS →](/fittrack/en/supabase/auth-and-rls/) turns on email authentication, auto-creates a `profiles` row for every new user with a database trigger, and locks each table down with row-level security.
+FitTrack's database is **four tables** — `profiles` (1:1 with Supabase's `auth.users`, the app-owned user record), `exercises` (one catalog for shared and user-created), `workouts` (a logged session), and `workout_sets` (the sets within it) — defined as a single **version-controlled migration**. You created it with `supabase migration new`, wrote the `CREATE TABLE` DDL by hand with `uuid` primary keys, exact `numeric` weights, and cascading foreign keys down the ownership chain, then applied it with `supabase db reset`, which rebuilds the local database deterministically from every migration file. `supabase migration list --local` and a `psql \dt` confirmed the four tables exist, and a second reset proved the history replays cleanly. The tables are in place but wide open — nothing yet ties a `workouts` row to the user who may read it. Next, [Auth and RLS →](/fittrack/en/supabase/auth-and-rls/) turns on email authentication, auto-creates a `profiles` row for every new user with a database trigger, and locks each table down with row-level security.

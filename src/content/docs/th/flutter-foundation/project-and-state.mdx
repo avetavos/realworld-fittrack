@@ -67,6 +67,8 @@ dependencies:
   go_router: ^14.6.2        # declarative routing
 ```
 
+> **หมายเหตุเวอร์ชัน (กันยายน 2026)** การ pin ด้านบนตั้งใจไว้: guide นี้เขียนและตรวจสอบกับ Riverpod 2.x และ go_router 14.x ปัจจุบัน Riverpod 3 (major ที่ breaking มี `Notifier`/`AsyncNotifier` และ import `legacy` สำหรับ `StateProvider`) กับ go_router 18 ออกแล้ว ช่วง caret ที่ pin ไว้จะให้คุณอยู่บน API ที่บทเรียนแสดง ถ้าเริ่มจาก major ใหม่กว่า ให้อ่าน [Riverpod 3 migration guide](https://riverpod.dev/docs/3.0_migration) ควบคู่กับบทเรียนเหล่านี้
+
 ### 3. วางโครง `lib/src/`
 
 แทนที่ demo counter ของ Flutter ด้วยโครงสร้างแบบ feature-first สร้างโฟลเดอร์และไฟล์เหล่านี้:
